@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hypercut"
+version = "0.1.0"
+description = "Browse live Twitch/Kick streams and auto-clip chat spikes into vertical shorts."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "streamlink>=8",
+    "faster-whisper>=1.2",
+    "websockets>=15",
+    "av<16",
+]
+
+[project.scripts]
+hypercut = "hypercut.__main__:cli"
+
+[tool.setuptools]
+packages = ["hypercut"]
+
+[tool.setuptools.package-data]
+hypercut = ["static/*", "fonts/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["hypercut"]

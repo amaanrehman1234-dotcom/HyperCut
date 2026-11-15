@@ -1,0 +1,4 @@
+streamlink>=8
+faster-whisper>=1.2
+websockets>=15
+av<16  # faster-whisper 1.2 breaks on PyAV 16+ (metadata_errors kwarg)

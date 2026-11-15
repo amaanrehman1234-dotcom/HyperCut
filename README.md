@@ -1,1 +1,113 @@
-# HyperCut
+<p align="center"><img src="hypercut/static/logo.svg" width="88" alt="HyperCut logo"></p>
+
+<h1 align="center">HyperCut</h1>
+
+<p align="center">Point it at a Twitch or Kick streamer. When their chat explodes, you get the clip, captioned and cut vertical for TikTok, Reels and Shorts.<br>Runs on your own machine. No accounts, no API keys, no subscription.</p>
+
+<p align="center"><img src="docs/img/short.gif" width="240" alt="A vertical short HyperCut made by itself from a live ohnepixel stream, with word-by-word captions"></p>
+
+## How it works
+
+Chat reacts before anyone has time to clip. A streamer does something wild and chat goes from 40 messages every ten seconds to 200. HyperCut watches for exactly that.
+
+| part | job |
+|---|---|
+| `streamlink` | records the stream the moment it goes live |
+| `chat` | reads chat anonymously, no account and no token |
+| `spikes` | counts chat messages every ten seconds |
+| `ffmpeg` | cuts 30 seconds around every spike |
+| `whisper` | writes the captions |
+
+Each spike becomes three files: the 30-second clip, an `.srt` caption file, and a 1080×1920 short with captions burned in one word at a time. The spoken word lights up yellow, the way clip channels do it.
+
+## The dashboard
+
+<p align="center"><img src="docs/img/live.png" width="820" alt="HyperCut dashboard showing live Twitch and Kick channels sorted by viewers"></p>
+
+The Live tab lists about 1,100 channels live right now across Twitch and Kick, biggest first. Search, filter by platform or game, and star your favourites. Click one and the stream plays right there, with a **Start clipping** button under it.
+
+<p align="center"><img src="docs/img/watch.png" width="820" alt="Watching a stream with the five-part clipping status panel"></p>
+
+The panel on the right shows each part of the pipeline as it runs, plus a little graph of chat speed. Clip as many channels at once as your machine can handle.
+
+## Install
+
+You need Python 3.10 or newer and [ffmpeg](https://ffmpeg.org/download.html).
+
+```bash
+pipx install git+https://github.com/amaanrehman1234-dotcom/HyperCut
+hypercut --open
+```
+
+No pipx? `pip install git+https://github.com/amaanrehman1234-dotcom/HyperCut` works too. The first clip downloads the whisper model (about 150 MB for `base`), so give that one a minute.
+
+## Run it all day on one game
+
+```bash
+hypercut --follow "Grand Theft Auto VI" --top 3
+```
+
+Every five minutes HyperCut checks who the three biggest live streamers in that game are, across Twitch and Kick together, and clips them side by side. When someone drops out of the top three, their pending clips still finish before it moves on.
+
+It records in 10-second chunks stamped with the real time and throws away anything older than ten minutes. So it can run for days without filling your disk, and Twitch ad breaks don't knock the clips out of sync.
+
+## Watch from your phone
+
+```bash
+hypercut --phone --follow "Grand Theft Auto VI"
+```
+
+It prints a link like `http://192.168.1.20:8787/?key=…`. Open it on your phone on the same Wi-Fi. The phone remembers the key, and anything on the network without it gets turned away.
+
+<p align="center"><img src="docs/img/phone.png" width="260" alt="HyperCut on a phone"></p>
+
+## Get pinged on Discord
+
+```bash
+hypercut --follow "Grand Theft Auto VI" --discord-webhook https://discord.com/api/webhooks/…
+```
+
+Every finished short gets posted to your Discord channel with the video attached (text only if it's over Discord's 25 MB limit). You can also set `HYPERCUT_DISCORD_WEBHOOK` instead of passing the flag.
+
+## Tuning
+
+```
+--multiplier 2.0     a spike is a 10 s bucket at least this many times the usual chat speed
+--min-msgs 10        and at least this many messages
+--cooldown 30        seconds before the same channel can spike again
+--clip-length 30     --pre 20   (seconds kept before the spike; chat reacts late)
+--whisper-model base tiny is fastest, small and up caption better
+--quality best       streamlink quality
+--out DIR            where clips/ and recordings/ go
+--port 8787          --host 127.0.0.1
+```
+
+Getting no clips? Big chats are steady, so 2.0× can be a high bar. Watch the spikes line in the dashboard (`85 msgs/10s · baseline 72`) and try `--multiplier 1.6`. Getting too many? Push it to 2.5.
+
+## Use it with Claude
+
+The repo ships a Claude Code skill in `.claude/skills/hypercut/`. Copy that folder into `~/.claude/skills/` and you can just say "clip ohnepixel", "run GTA 6 mode overnight" or "why am I not getting clips?" and Claude runs the right command and checks the output.
+
+## Be a good clipper
+
+Twitch and Kick don't officially support the endpoints HyperCut reads from, so they may change without warning. Clips belong to the streamers who made them. If you're posting them, check the streamer's rules. Plenty of big streamers run clipping programs and pay for it.
+
+HyperCut doesn't auto-post to TikTok or Instagram. Both only allow that through their official APIs, which need your own developer app. The `Session.on_clip` hook is where an uploader goes once you have one.
+
+## Security
+
+The dashboard only listens on `127.0.0.1` unless you pass `--phone`. It checks the Host and Origin headers, so a random website can't drive it from your browser. Phone mode needs a random key, checked against the connecting address rather than anything the client claims. The code is scanned with `bandit`, `pip-audit` and `detect-secrets` and has had a manual security review. Details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Hacking on it
+
+```bash
+git clone https://github.com/amaanrehman1234-dotcom/HyperCut && cd HyperCut
+pip install -e . -r requirements-dev.txt
+pytest --cov=hypercut --cov-fail-under=100   # every line tested, no network needed
+python scripts/live_test.py                  # clips a random live Twitch + Kick streamer for real
+python scripts/e2e.py                        # drives the dashboard in a real browser
+```
+
+Plain Python and the standard library wherever possible. The only dependencies are streamlink, faster-whisper and websockets.
+
+MIT licensed. Caption font is Montserrat ([SIL Open Font License](hypercut/fonts/OFL.txt)).

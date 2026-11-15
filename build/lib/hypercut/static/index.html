@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HyperCut</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#09090b; --grid:#17171a; --card:#111113; --card2:#18181b; --line:#2a2a2e;
+  --fg:#f5f5f4; --muted:#a1a1aa; --accent:#ffd43b; --on-accent:#111113; --live:#ef4444; --err:#f87171;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace; --sans:Inter,system-ui,-apple-system,Segoe UI,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 var(--sans);
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:56px 56px}
+a{color:inherit}
+button,input,select{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1440px;margin:0 auto;padding:0 16px}
+header{position:sticky;top:0;z-index:5;background:rgba(9,9,11,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 0}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:22px;letter-spacing:-.02em;text-decoration:none;margin-right:auto}
+.brand img{width:36px;height:36px}
+.tabs{display:flex;gap:4px}
+.btn{min-height:44px;padding:0 16px;border-radius:10px;border:1px solid var(--line);background:var(--card2);cursor:pointer;font-weight:600;transition:background .15s,border-color .15s}
+.btn:hover{border-color:var(--accent)}
+.btn[aria-pressed=true],.btn.primary{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.btn.danger{background:transparent;color:var(--err);border-color:var(--err)}
+.filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:0 0 12px}
+input[type=search],select{min-height:44px;border-radius:10px;border:1px solid var(--line);background:var(--card);padding:0 12px}
+input[type=search]{flex:1 1 240px;min-width:0}
+main{padding:20px 0 60px}
+h2{font-size:20px;margin:24px 0 12px;letter-spacing:-.01em}
+.muted{color:var(--muted)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;cursor:pointer;text-align:left;padding:0;transition:transform .15s,border-color .15s}
+.card:hover{border-color:var(--accent);transform:translateY(-2px)}
+.thumb{position:relative;aspect-ratio:16/9;background:var(--card2)}
+.thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.pill{position:absolute;top:8px;font:600 12px/1 var(--sans);padding:5px 7px;border-radius:6px}
+.pill.live{left:8px;background:var(--live);color:#fff}
+.pill.views{left:8px;top:auto;bottom:8px;background:rgba(0,0,0,.75)}
+.pill.plat{right:8px;background:rgba(0,0,0,.75);text-transform:capitalize}
+.pill.rec{right:8px;top:auto;bottom:8px;background:var(--accent);color:var(--on-accent)}
+.meta{padding:10px 12px 12px}
+.meta b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meta span{display:block;font-size:14px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.watch{margin-top:16px;display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:16px;align-items:start}
+@media (max-width:1000px){.watch{grid-template-columns:1fr}}
+.player{aspect-ratio:16/9;width:100%;border:0;border-radius:12px;background:#000;display:block}
+.watch-head{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0}
+.watch-head h1{font-size:20px;margin:0 auto 0 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* the terminal card from the brief */
+.term{background:var(--card);border:2px solid var(--fg);border-radius:14px;overflow:hidden}
+.term-top{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:1px solid var(--line)}
+.dots{display:flex;gap:6px}.dots i{width:10px;height:10px;border-radius:50%;background:#3f3f46}
+.path{font-family:var(--mono);color:var(--fg);margin-right:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.count{font-family:var(--mono);font-weight:600;font-size:14px;border:1px solid var(--line);border-radius:8px;padding:4px 10px;white-space:nowrap}
+.count.full{color:var(--accent);border-color:var(--accent)}
+.row{display:grid;grid-template-columns:96px minmax(0,1fr) 32px;gap:10px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line)}
+.row:last-of-type{border-bottom:0}
+.row code{font-family:var(--mono);color:var(--accent);font-size:15px}
+.row p{min-width:0;overflow-wrap:anywhere;margin:0;font-weight:600;line-height:1.3}
+.row small{display:block;font-weight:400;color:var(--muted);font-size:13px;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st{width:28px;height:28px;border-radius:50%;display:grid;place-items:center;border:2px solid var(--line)}
+.st.ok,.st.busy{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.st.busy{animation:pulse 1s infinite}
+.st.waiting{border-color:var(--accent);border-style:dashed}
+.st.error{border-color:var(--err);color:var(--err)}
+@keyframes pulse{50%{opacity:.5}}
+@media (max-width:600px){
+  header{position:static}
+  .bar{flex-wrap:nowrap;gap:8px;padding:10px 0}
+  .brand{font-size:18px;gap:8px}.brand img{width:28px;height:28px}
+  .tabs .btn{padding:0 10px;font-size:15px}
+  .filters select{flex:1 1 40%;min-width:0}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+.spark{display:block;width:100%;height:48px;padding:0 14px 12px}
+.term-foot{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:0 14px 14px;font-size:14px}
+.empty{padding:40px;text-align:center;border:1px dashed var(--line);border-radius:12px;color:var(--muted)}
+.clips video{width:100%;aspect-ratio:16/9;background:#000;display:block}
+.err{color:var(--err)}
+.sr,.filters label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+#more{height:1px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="bar">
+      <a class="brand" href="#/"><img src="/logo.svg" alt="">HyperCut</a>
+      <nav class="tabs" aria-label="Sections">
+        <button class="btn" data-tab="live" aria-pressed="true">Live</button>
+        <button class="btn" data-tab="clipping" aria-pressed="false">Clipping <span id="nSessions"></span></button>
+        <button class="btn" data-tab="clips" aria-pressed="false">Clips</button>
+      </nav>
+    </div>
+    <form class="filters" id="filters" role="search">
+      <label for="q">Search live channels</label>
+      <input type="search" id="q" placeholder="Search channels…" aria-describedby="qHint" autocomplete="off">
+      <span class="sr" id="qHint">Enter opens a channel by name</span>
+      <label for="plat">Platform</label>
+      <select id="plat"><option value="">All platforms</option><option value="twitch">Twitch</option><option value="kick">Kick</option></select>
+      <label for="cat">Category</label>
+      <select id="cat"><option value="">All categories</option></select>
+    </form>
+  </div>
+</header>
+<main class="wrap">
+  <section id="view-watch" hidden></section>
+  <section id="view-live">
+    <p class="muted" id="liveInfo" aria-live="polite">Loading who's live…</p>
+    <div id="favs"></div>
+    <div class="grid" id="grid"></div>
+    <div id="more"></div>
+  </section>
+  <section id="view-clipping" hidden><p class="muted" id="following" aria-live="polite"></p><p class="err" id="sessMsg" aria-live="polite"></p><div class="grid" id="sessions" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))"></div></section>
+  <section id="view-clips" hidden><div class="grid clips" id="clips"></div></section>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const put = (el, html) => { if (el._h !== html) { el._h = html; el.innerHTML = html; } };  // skip no-op rewrites
+const fmt = n => n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "K" : String(n);
+const api = async (path, body) => {
+  const r = await fetch(path, body ? {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)} : {});
+  const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j;
+};
+const ROWS = [
+  ["streamlink", "records the stream the moment it goes live"],
+  ["chat", "read anonymously — no account, no token"],
+  ["spikes", "counts chat messages every ten seconds"],
+  ["ffmpeg", "cuts 30 seconds around every spike"],
+  ["whisper", "writes the captions"],
+];
+const CHECK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>';
+const CROSS = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+let live = [], favs = [], sessions = [], shown = 0, filtered = [];
+
+function card(s) {
+  const rec = sessions.some(x => x.key === `${s.platform}:${s.login}`);
+  return `<button class="card" data-p="${esc(s.platform)}" data-l="${esc(s.login)}" aria-label="Watch ${esc(s.name)} on ${esc(s.platform)}">
+    <div class="thumb"><img loading="lazy" src="${esc(s.thumb)}" alt="" width="440" height="248">
+      <span class="pill live">LIVE</span><span class="pill plat">${esc(s.platform)}</span>
+      <span class="pill views">${fmt(s.viewers)} viewers</span>${rec ? '<span class="pill rec">CLIPPING</span>' : ""}</div>
+    <div class="meta"><b title="${esc(s.title)}">${esc(s.title)}</b><span>${esc(s.name)}</span><span>${esc(s.category)}</span></div></button>`;
+}
+
+function applyFilters(keep) {
+  const q = $("#q").value.trim().toLowerCase(), p = $("#plat").value, c = $("#cat").value;
+  filtered = live.filter(s => (!p || s.platform === p) && (!c || s.category === c) &&
+    (!q || `${s.name} ${s.login} ${s.title} ${s.category}`.toLowerCase().includes(q)));
+  const depth = keep ? Math.max(shown, 48) : 48;
+  shown = 0; $("#grid").innerHTML = ""; more(depth);
+  const fav = live.filter(s => favs.includes(`${s.platform}:${s.login}`));
+  $("#favs").innerHTML = fav.length ? `<h2>Favorites live</h2><div class="grid">${fav.map(card).join("")}</div><h2>Everyone live</h2>` : "";
+  $("#liveInfo").textContent = `${filtered.length.toLocaleString()} channels live${q || p || c ? " (filtered)" : ""}`;
+}
+function more(n = 48) {
+  const next = filtered.slice(shown, shown + n); shown += next.length;
+  $("#grid").insertAdjacentHTML("beforeend", next.map(card).join(""));
+}
+new IntersectionObserver(e => e[0].isIntersecting && shown < filtered.length && more(), {rootMargin: "800px"}).observe($("#more"));
+
+async function loadLive() {
+  try {
+    const d = await api("/api/live"); live = d.items; favs = d.favorites;
+    const cats = [...new Set(live.map(s => s.category).filter(Boolean))].sort();
+    const cur = $("#cat").value;
+    $("#cat").innerHTML = '<option value="">All categories</option>' + cats.map(c => `<option${c === cur ? " selected" : ""}>${esc(c)}</option>`).join("");
+    applyFilters(true);
+    const errs = Object.entries(d.errors).map(([k, v]) => `${k}: ${v}`).join("; ");
+    if (errs) $("#liveInfo").insertAdjacentHTML("beforeend", ` <span class="err">— couldn't load ${esc(errs)}</span>`);
+  } catch (e) { $("#liveInfo").innerHTML = `<span class="err">Couldn't load live channels: ${esc(e.message)}</span>`; }
+}
+
+function spark(series) {
+  if (!series.length) return "";
+  const max = Math.max(1, ...series), w = 300, h = 40, step = w / Math.max(1, series.length - 1);
+  const pts = series.map((v, i) => `${(i * step).toFixed(1)},${(h - v / max * h).toFixed(1)}`).join(" ");
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="Chat messages per bucket, last ${series.length}"><polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>`;
+}
+function term(s) {
+  const rows = ROWS.map(([k, label]) => {
+    const p = s.parts[k], icon = p.state === "error" ? CROSS : (p.state === "ok" || p.state === "busy") ? CHECK : "";
+    return `<div class="row"><code>${k}</code><p>${label}<small title="${esc(p.detail)}">${esc(p.detail || p.state)}</small></p>
+      <span class="st ${p.state}" role="img" aria-label="${k}: ${p.state}">${icon}</span></div>`;
+  }).join("");
+  return `<article class="term" data-key="${esc(s.key)}">
+    <div class="term-top"><span class="dots"><i></i><i></i></span><span class="path">~/hypercut/${esc(s.login)}</span>
+      <span class="count ${s.running === 5 ? "full" : ""}">${s.running}/5 RUNNING</span></div>
+    ${rows}${spark(s.series)}
+    <div class="term-foot"><span class="muted">${s.spikes} spikes · ${s.clips} clips · ${esc(s.platform)}</span>
+      <button class="btn danger" data-stop="${esc(s.key)}">Stop</button></div></article>`;
+}
+
+async function loadSessions() {
+  try { sessions = await api("/api/sessions"); } catch { return; }
+  api("/api/following").then(f => { $("#following").innerHTML = f ? `24/7 mode: following the top ${f.channels.length} live in <b>${esc(f.category)}</b>` : ""; }).catch(() => {});
+  $("#nSessions").textContent = sessions.length ? `(${sessions.length})` : "";
+  put($("#sessions"), sessions.length ? sessions.map(term).join("") : '<div class="empty">Nothing clipping yet. Open a live channel and press <b>Start clipping</b>.</div>');
+  const w = $("#view-watch");
+  if (!w.hidden && w.dataset.key) {
+    const s = sessions.find(x => x.key === w.dataset.key);
+    put($("#watchTerm"), s ? term(s) : '<div class="empty">Not clipping this channel.</div>');
+    $("#toggle").textContent = s ? "Stop clipping" : "Start clipping";
+    $("#toggle").className = s ? "btn danger" : "btn primary";
+  }
+}
+
+async function loadClips() {
+  const c = await api("/api/clips");
+  if ([...document.querySelectorAll("#clips video")].some(v => !v.paused)) return;  // don't yank a playing clip
+  put($("#clips"), c.length ? c.map(x => `<article class="card" style="cursor:default">
+    <video controls preload="metadata" src="/clips/${esc(x.name)}" aria-label="Clip from ${esc(x.login)}">${x.captions ? `<track kind="captions" src="/clips/${esc(x.name.replace(/\.mp4$/, ".vtt"))}" srclang="en" label="Captions" default>` : ""}</video>
+    <div class="meta"><b>${esc(x.login)}</b><span>${esc(x.platform)} · ${new Date(x.at * 1000).toLocaleString()}</span>
+    <span><a href="/clips/${esc(x.name)}" download>Download mp4</a>${x.captions ? ` · <a href="/clips/${esc(x.name.replace(/\.mp4$/, ".srt"))}" download>srt</a>` : ""}${x.short ? ` · <a href="/clips/${esc(x.name.replace(/\.mp4$/, ".short.mp4"))}" download>Vertical short (9:16)</a>` : ""}</span></div></article>`).join("")
+    : '<div class="empty">No clips yet. They appear here when chat spikes.</div>');
+}
+
+function embed(p, l) {
+  const parents = ["localhost", "127.0.0.1", location.hostname].filter((v, i, a) => v && a.indexOf(v) === i).map(h => `&parent=${h}`).join("");
+  return p === "twitch" ? `https://player.twitch.tv/?channel=${encodeURIComponent(l)}${parents}&muted=false` : `https://player.kick.com/${encodeURIComponent(l)}`;
+}
+async function watch(p, l) {
+  const w = $("#view-watch"), key = `${p}:${l}`;
+  w.dataset.key = key; w.hidden = false;
+  const s = live.find(x => x.platform === p && x.login === l);
+  const fav = favs.includes(key);
+  w.innerHTML = `<div class="watch"><div><iframe class="player" src="${embed(p, l)}" title="${esc(l)} live stream" allowfullscreen allow="autoplay; fullscreen; keyboard-map"></iframe>
+    <div class="watch-head"><h1>${esc(s ? s.name : l)} <span class="muted">· ${esc(p)}</span></h1>
+      <button class="btn" id="fav" aria-pressed="${fav}">${fav ? "★ Favorited" : "☆ Favorite"}</button>
+      <button class="btn primary" id="toggle">Start clipping</button>
+      <button class="btn" id="close" aria-label="Close player">Close</button></div>
+    <p class="err" id="watchMsg" aria-live="polite"></p>
+    <p class="muted" style="margin:0">${esc(s ? `${s.title} — ${s.category} — ${fmt(s.viewers)} viewers` : "")}</p></div>
+    <div id="watchTerm"></div></div>`;
+  $("#toggle").onclick = async e => {
+    e.target.disabled = true; $("#watchMsg").textContent = "";
+    try { await api(sessions.some(x => x.key === key) ? "/api/stop" : "/api/start", {platform: p, login: l}); }
+    catch (err) { $("#watchMsg").textContent = err.message; }
+    finally { e.target.disabled = false; }
+    loadSessions();
+  };
+  $("#fav").onclick = async e => {
+    favs = await api("/api/favorite", {platform: p, login: l, on: !favs.includes(key)});
+    const on = favs.includes(key);  // update in place: re-running watch() would reload the player
+    e.target.textContent = on ? "★ Favorited" : "☆ Favorite"; e.target.setAttribute("aria-pressed", on); applyFilters(true);
+  };
+  $("#close").onclick = () => { location.hash = "#/"; };
+  loadSessions(); scrollTo({top: 0});
+}
+
+function route() {
+  const m = location.hash.match(/^#\/watch\/(twitch|kick)\/([A-Za-z0-9_-]+)$/);
+  if (m) return watch(m[1], m[2].toLowerCase());
+  const w = $("#view-watch"); w.hidden = true; w.innerHTML = ""; delete w.dataset.key;
+}
+function tab(name) {
+  document.querySelectorAll("[data-tab]").forEach(b => b.setAttribute("aria-pressed", b.dataset.tab === name));
+  ["live", "clipping", "clips"].forEach(t => $(`#view-${t}`).hidden = t !== name);
+  $("#filters").hidden = name !== "live";
+  if (name === "clips") loadClips();
+}
+
+document.addEventListener("click", async e => {
+  const c = e.target.closest(".card[data-p]");
+  if (c) { tab("live"); location.hash = `#/watch/${c.dataset.p}/${c.dataset.l}`; return; }
+  const t = e.target.closest("[data-tab]");
+  if (t) { tab(t.dataset.tab); if (location.hash.startsWith("#/watch")) location.hash = "#/"; return; }
+  const s = e.target.closest("[data-stop]");
+  if (s) { const [p, l] = s.dataset.stop.split(":"); s.disabled = true; $("#sessMsg").textContent = "";
+    try { await api("/api/stop", {platform: p, login: l}); } catch (err) { $("#sessMsg").textContent = err.message; } finally { s.disabled = false; }
+    loadSessions(); }
+});
+$("#filters").addEventListener("submit", async e => {
+  e.preventDefault();
+  const q = $("#q").value.trim().toLowerCase();
+  if (!/^[a-z0-9_-]{1,40}$/.test(q)) return;
+  const p = $("#plat").value;
+  for (const platform of p ? [p] : ["twitch", "kick"]) {
+    try { await api(`/api/lookup?platform=${platform}&login=${q}`); location.hash = `#/watch/${platform}/${q}`; return; } catch {}
+  }
+  $("#liveInfo").innerHTML = `<span class="err">${esc(q)} isn't live right now.</span>`;
+});
+["#q", "#plat", "#cat"].forEach(s => $(s).addEventListener("input", () => applyFilters()));
+addEventListener("hashchange", route);
+
+loadLive().then(route); loadSessions();
+setInterval(loadLive, 60000); setInterval(loadSessions, 2000);
+setInterval(() => !$("#view-clips").hidden && loadClips(), 15000);
+</script>
+</body>
+</html>

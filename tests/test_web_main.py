@@ -1,0 +1,367 @@
+import http.client
+import json
+import os
+import runpy
+import signal
+import threading
+import urllib.error
+import urllib.request
+
+import pytest
+
+from hypercut import __main__ as cli
+from hypercut import directory, web
+
+
+class FakeSession:
+    def __init__(self, platform, login, out, cfg):
+        self.k, self.stopped = f"{platform}:{login}", False
+
+    def start(self):
+        pass
+
+    def stop(self):
+        self.stopped = True
+
+    def status(self):
+        return {"key": self.k}
+
+
+class FakeDir:
+    errors = {"x": "y"}
+
+    def live(self):
+        return [{"login": "a"}]
+
+
+@pytest.fixture
+def srv(tmp_path):
+    app = web.App(tmp_path, {}, FakeDir(), FakeSession)
+    s = web.make_server(app, port=0)
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    yield app, f"http://127.0.0.1:{s.server_address[1]}"
+    s.shutdown()
+    s.server_close()
+
+
+def req(base, path, body=None, raw=None, headers=None):
+    data = raw if raw is not None else (json.dumps(body).encode() if body is not None else None)
+    h = {"Content-Type": "application/json", **(headers or {})}
+    try:
+        r = urllib.request.urlopen(urllib.request.Request(base + path, data=data, headers=h), timeout=5)
+    except urllib.error.HTTPError as e:
+        r = e
+    b = r.read()
+    return r.status, (json.loads(b) if r.headers["Content-Type"] == "application/json" else b)
+
+
+def test_routes(srv, tmp_path, monkeypatch):
+    app, b = srv
+    assert req(b, "/")[0] == 200 and req(b, "/logo.svg")[0] == 200 and req(b, "/favicon.svg")[0] == 200
+    assert req(b, "/api/live") == (200, {"items": [{"login": "a"}], "errors": {"x": "y"}, "favorites": []})
+    assert req(b, "/api/clips") == (200, [])  # no clips dir
+    assert req(b, "/api/sessions") == (200, [])
+    assert req(b, "/api/following") == (200, {"category": "", "channels": []})
+    app.following = {"category": "G", "channels": ["kick:a"]}
+    assert req(b, "/api/following") == (200, app.following)
+
+    monkeypatch.setattr(directory, "lookup", lambda p, l: {"login": l} if l == "on" else None)
+    assert req(b, "/api/lookup?platform=twitch&login=ON") == (200, {"login": "on"})
+    assert req(b, "/api/lookup?platform=twitch&login=off")[0] == 404
+    assert req(b, "/api/lookup?platform=nope&login=x")[0] == 400
+
+    def boom(*a):
+        raise OSError("down")
+
+    monkeypatch.setattr(directory, "lookup", boom)
+    assert req(b, "/api/lookup?platform=kick&login=x") == (502, {"error": "down"})
+
+    clips = tmp_path / "clips"
+    clips.mkdir()
+    (clips / "twitch_a_b_20240101-000000.mp4").write_bytes(b"v")
+    (clips / "twitch_a_b_20240101-000000.vtt").write_text("WEBVTT")
+    (tmp_path / "secret.mp4").write_bytes(b"s")
+    got = req(b, "/api/clips")[1]
+    assert got[0]["captions"] and got[0]["login"] == "a_b" and got[0]["platform"] == "twitch"
+    assert req(b, "/clips/twitch_a_b_20240101-000000.mp4") == (200, b"v")
+    assert req(b, "/clips/twitch_a_b_20240101-000000.vtt")[0] == 200
+    assert req(b, "/clips/..%2Fsecret.mp4")[0] == 404
+    assert req(b, "/clips/missing.mp4")[0] == 404 and req(b, "/nope")[0] == 404
+
+    assert req(b, "/api/start", {"platform": "twitch", "login": "Foo"}) == (200, {"key": "twitch:foo"})
+    req(b, "/api/start", {"platform": "twitch", "login": "foo"})
+    assert req(b, "/api/sessions") == (200, [{"key": "twitch:foo"}])
+    assert req(b, "/api/favorite", {"platform": "twitch", "login": "foo", "on": 1}) == (200, ["twitch:foo"])
+    assert req(b, "/api/favorite", {"platform": "twitch", "login": "foo"}) == (200, [])
+    assert req(b, "/api/live")[1]["favorites"] == []
+    assert req(b, "/api/stop", {"platform": "twitch", "login": "foo"}) == (200, {"stopped": True})
+    assert req(b, "/api/stop", {"platform": "twitch", "login": "foo"}) == (200, {"stopped": False})
+    assert req(b, "/api/other", {"platform": "twitch", "login": "foo"})[0] == 404
+    assert req(b, "/api/start", {"platform": "x", "login": "foo"})[0] == 400
+    assert req(b, "/api/start", raw=b"{bad")[0] == 400
+    assert req(b, "/api/start", raw=b"[]")[0] == 400  # AttributeError
+    assert req(b, "/api/start", raw=b"")[0] == 400  # empty -> {} -> bad channel
+    assert req(b, "/clips/x.mp4\n")[0] == 404  # fullmatch: no trailing-newline slip
+
+
+def test_guards(srv):
+    app, b = srv
+    port = b.rsplit(":", 1)[1]
+    ok = {"platform": "twitch", "login": "foo"}
+    assert req(b, "/api/live", headers={"Host": "evil.com"})[0] == 403
+    assert req(b, "/api/start", ok, headers={"Host": "evil.com"})[0] == 403
+    assert req(b, "/api/live", headers={"Host": f"localhost:{port}"})[0] == 200
+    assert req(b, "/api/start", ok, headers={"Content-Type": "text/plain"})[0] == 415
+    assert req(b, "/api/start", ok, headers={"Origin": "http://evil.com"})[0] == 403
+    assert req(b, "/api/start", ok, headers={"Origin": f"http://localhost:{port}"})[0] == 200
+    assert req(b, "/api/start", raw=b" " * 4097)[0] == 413
+    assert req(b, "/api/start", headers={"Content-Length": "-1"}, raw=b"")[0] == 413
+
+
+def test_session_cap(tmp_path):
+    app = web.App(tmp_path, {}, FakeDir(), FakeSession)
+    for i in range(web.MAX_SESSIONS):
+        app.start("kick", f"a{i}")
+    app.start("kick", "a0")  # existing is fine
+    with pytest.raises(ValueError):
+        app.start("kick", "extra")
+
+
+def test_favorites_robust(tmp_path):
+    app = web.App(tmp_path, {}, FakeDir(), FakeSession)
+    app.out.mkdir(exist_ok=True)
+    app.fav_path.write_text("{corrupt")
+    assert app.favorites() == []
+    assert app.set_favorite("kick", "a", True) == ["kick:a"] and not app.fav_path.with_suffix(".tmp").exists()
+
+
+def test_clips_skip_tmp(tmp_path):
+    d = tmp_path / "clips"
+    d.mkdir()
+    for n in ("kick_a_1.tmp.mp4", "kick_a_1.part.mp4", "kick_a_9.short.mp4"):
+        (d / n).write_bytes(b"x")
+    assert web.App(tmp_path, {}).clips() == []
+    (d / "kick_a_2.mp4").write_bytes(b"x")
+    (d / "kick_a_3.mp4").write_bytes(b"x")
+    (d / "kick_a_3.short.mp4").write_bytes(b"x")
+    flags = {c["name"]: c["short"] for c in web.App(tmp_path, {}).clips()}
+    assert flags == {"kick_a_2.mp4": False, "kick_a_3.mp4": True}
+
+
+def test_stop_all(tmp_path):
+    app = web.App(tmp_path, {}, FakeDir(), FakeSession)
+    app.start("kick", "a")
+    s = app.sessions["kick:a"]
+    app.stop_all()
+    assert s.stopped and not app.sessions
+    assert isinstance(web.App(tmp_path, {}).dir, directory.Directory)
+
+
+def test_cli(tmp_path, monkeypatch):
+    a, cfg = cli.parse(["--port", "1", "--bucket", "5"])
+    assert a.port == 1 and a.multiplier == 2.0 and cfg["bucket"] == 5 and cfg["restart_delay"] == 30
+    opened = []
+    monkeypatch.setattr(cli.webbrowser, "open", opened.append)
+    app = cli.main(["--port", "0", "--out", str(tmp_path), "--open"], serve=False)
+    assert opened[0].startswith("http://127.0.0.1:") and isinstance(app, web.App)
+    cli.main(["--port", "0", "--out", str(tmp_path)], serve=False)
+    assert len(opened) == 1
+
+    class Srv:
+        server_address = ("h", 9)
+        closed = False
+
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+        def server_close(self):
+            self.closed = True
+
+    s = Srv()
+    monkeypatch.setattr(cli, "make_server", lambda *a, **k: s)
+    cli.main(["--out", str(tmp_path)])
+    assert s.closed
+
+    monkeypatch.setattr(web, "make_server", lambda *a, **k: s)
+    monkeypatch.setattr("sys.argv", ["hypercut", "--out", str(tmp_path)])
+    runpy.run_module("hypercut", run_name="__main__")
+
+    old = signal.getsignal(signal.SIGTERM)
+    s.closed = False
+    s.serve_forever = lambda: os.kill(os.getpid(), signal.SIGTERM)
+    try:
+        cli.main(["--out", str(tmp_path)])  # SIGTERM acts like Ctrl+C
+    finally:
+        signal.signal(signal.SIGTERM, old)
+    assert s.closed
+
+
+def test_follow_swaps_channels(tmp_path, monkeypatch):
+    log = []
+
+    class Sess(FakeSession):
+        def __init__(self, platform, login, out, cfg):
+            super().__init__(platform, login, out, cfg)
+            log.append(("start", self.k))
+
+        def stop(self):
+            log.append(("stop", self.k))
+
+    stop = threading.Event()
+    rounds = iter([("a", "b"), ("b", "c"), ()])
+
+    def top(cat, n):
+        r = next(rounds)
+        if not r:
+            stop.set()  # last lookup: nobody live, loop ends after it
+        assert (cat, n) == ("G", 2)
+        return [{"platform": "twitch", "login": x} for x in r]
+
+    monkeypatch.setattr(directory, "category_top", top)
+    app = web.App(tmp_path, {}, FakeDir(), Sess)
+    app.follow("G", 2, every=0.01, stop=stop)
+    assert sorted(log[:2]) == [("start", "twitch:a"), ("start", "twitch:b")]
+    assert sorted(log[2:]) == [("start", "twitch:c"), ("stop", "twitch:a")]  # b kept, empty round changes nothing
+    assert app.following == {"category": "G", "channels": ["twitch:b", "twitch:c"]}
+    assert set(app.sessions) == {"twitch:b", "twitch:c"}
+
+
+def test_follow_default_stop_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(directory, "category_top", lambda c, n: [])
+
+    class Ev(threading.Event):
+        def wait(self, t=None):
+            return True  # returns after one round
+
+    monkeypatch.setattr(web.threading, "Event", Ev)
+    app = web.App(tmp_path, {}, FakeDir(), FakeSession)
+    app.follow("G", every=0)
+    assert app.following == {"category": "G", "channels": []}
+
+
+def test_cli_follow(tmp_path, monkeypatch):
+    got, ev = [], threading.Event()
+    monkeypatch.setattr(cli.App, "follow", lambda self, *a: (got.append(a), ev.set()))
+    cli.main(["--port", "0", "--out", str(tmp_path), "--follow", "G", "--top", "2"], serve=False)
+    assert ev.wait(5) and got == [("G", 2)]
+
+
+def raw_get(srv, path, host, method="GET", headers=None, body=None):
+    c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+    c.request(method, path, body=body, headers={"Host": host, **(headers or {})})
+    r = c.getresponse()
+    out = r.status, dict(r.getheaders()), r.read()
+    c.close()
+    return out
+
+
+def serve_with(tmp_path, **kw):
+    s = web.make_server(web.App(tmp_path, {}, FakeDir(), FakeSession), port=0, **kw)
+    threading.Thread(target=s.serve_forever, daemon=True).start()
+    return s
+
+
+def test_phone_key_flow(tmp_path):
+    s = serve_with(tmp_path, lan_ip="192.168.1.5", key="sekret")
+    try:
+        p = s.server_address[1]
+        assert raw_get(s, "/api/live", f"192.168.1.5:{p}")[0] == 200  # real loopback peer needs no key
+        s.RequestHandlerClass.loopback = ()  # from here on, act as a LAN peer
+        lan = f"192.168.1.5:{p}"
+        assert raw_get(s, "/api/live", lan)[0] == 401
+        assert raw_get(s, "/api/live?key=wrong", lan)[0] == 401
+        code, h, _ = raw_get(s, "/api/live?key=sekret", lan)
+        assert code == 303 and h["Location"] == "/" and "hc_key=sekret" in h["Set-Cookie"] and "HttpOnly" in h["Set-Cookie"]
+        assert raw_get(s, "/api/live", lan, headers={"Cookie": "a=b; hc_key=sekret"})[0] == 200
+        # regression: a LAN peer spoofing a loopback Host header must still need the key
+        assert raw_get(s, "/api/live", f"localhost:{p}")[0] == 401
+        assert raw_get(s, "/api/live", f"127.0.0.1:{p}")[0] == 401
+        assert raw_get(s, "/api/live", "evil.com")[0] == 403
+    finally:
+        s.shutdown()
+        s.server_close()
+
+
+def test_no_host_check(tmp_path):
+    s = serve_with(tmp_path, host_check=False)
+    try:
+        h = {"Content-Type": "application/json", "Origin": "https://preview.example"}
+        assert raw_get(s, "/api/live", "anything.example")[0] == 200
+        code, _, body = raw_get(s, "/api/start", "anything.example", "POST", h, json.dumps({"platform": "kick", "login": "a"}))
+        assert code == 200 and json.loads(body) == {"key": "kick:a"}
+    finally:
+        s.shutdown()
+        s.server_close()
+
+
+def test_lan_ip(monkeypatch):
+    class Sock:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+
+        def connect(self, addr):
+            self.addr = addr
+
+        def getsockname(self):
+            return ("192.168.9.9", 1234)
+
+    monkeypatch.setattr(web.socket, "socket", lambda *a: Sock())
+    assert web.lan_ip() == "192.168.9.9"
+
+
+def test_cli_phone_and_no_host_check(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "lan_ip", lambda: "10.0.0.2")
+    app = cli.main(["--port", "0", "--out", str(tmp_path), "--phone"], serve=False)
+    out = capsys.readouterr().out
+    assert "http://10.0.0.2:" in out and "/?key=" in out and isinstance(app, web.App)
+
+    seen = {}
+    monkeypatch.setattr(cli, "make_server", lambda *a, **k: seen.update(k=k) or type("S", (), {
+        "server_address": ("h", 9), "server_close": lambda self: None})())
+    cli.main(["--out", str(tmp_path), "--no-host-check"], serve=False)
+    assert seen["k"] == {"host_check": False}
+
+
+def test_discord_webhook(tmp_path, monkeypatch):
+    from hypercut import notify
+    from hypercut.web import App
+    import pytest
+    for bad in ("http://x", "https://evil.com/api/webhooks/1"):
+        with pytest.raises(SystemExit):
+            cli.parse(["--discord-webhook", bad])
+    ok = "https://discord.com/api/webhooks/1/x"
+    assert cli.parse(["--discord-webhook", ok])[1]["discord_webhook"] == ok
+    monkeypatch.setenv("HYPERCUT_DISCORD_WEBHOOK", ok)
+    assert cli.parse([])[1]["discord_webhook"] == ok
+    assert notify.hook(None, "twitch", "a") is None
+    sent = []
+    monkeypatch.setattr(notify.urllib.request, "urlopen", lambda r, timeout: sent.append(r) or open(__file__, "rb"))
+    clip = tmp_path / "c.mp4"
+    short = tmp_path / "c.short.mp4"
+    short.write_bytes(b"VIDEO")
+    notify.hook(ok, "twitch", "a")(clip)
+    body = sent[0].data
+    assert sent[0].full_url == ok and b"\xf0\x9f\x94\xa5 Clip from twitch/a" in body and b'name="files[0]"' in body and b"VIDEO" in body
+    monkeypatch.setattr(notify, "MAX_BYTES", 1)
+    notify.hook(ok, "twitch", "a")(clip)
+    assert b"files[0]" not in sent[1].data
+    monkeypatch.setattr(notify.urllib.request, "urlopen", lambda r, timeout: 1 / 0)
+    notify.hook(ok, "twitch", "a")(clip)  # swallowed
+    created = []
+    class S:
+        def __init__(self, *a): created.append(self)
+        def start(self): pass
+        def status(self): return {}
+    app = App(tmp_path, {"discord_webhook": ok}, dir_=object(), session_cls=S)
+    app.start("twitch", "z")
+    assert created[0].on_clip
+
+
+def test_cli_entry_returns_none(monkeypatch):
+    import hypercut.__main__ as m
+    called = []
+    monkeypatch.setattr(m, "main", lambda: called.append(1) or "app")
+    assert m.cli() is None and called == [1]  # sys.exit(None) -> status 0

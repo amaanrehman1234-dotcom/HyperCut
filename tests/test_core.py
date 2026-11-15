@@ -1,0 +1,231 @@
+import io
+import json
+import threading
+
+import pytest
+from websockets.sync.server import serve
+
+from hypercut import chat, directory, net
+from hypercut.spikes import SpikeCounter
+
+
+def test_net_get_json(monkeypatch):
+    seen = {}
+
+    def fake(req, timeout):
+        seen.update(body=req.data, h=dict(req.header_items()), t=timeout)
+        return io.BytesIO(b'{"a": 1}')
+
+    monkeypatch.setattr("hypercut.net.urllib.request.urlopen", fake)
+    assert net.get_json("http://x", {"q": 1}, {"X-A": "b"}) == {"a": 1}
+    assert seen["body"] == b'{"q": 1}' and seen["h"]["X-a"] == "b" and seen["t"] == 15
+    net.get_json("http://x")
+    assert seen["body"] is None
+
+
+def test_spikes():
+    c = SpikeCounter(multiplier=2, min_msgs=5, cooldown=10, warmup=2)
+    for _ in range(3):  # warmup + baseline of 1
+        c.add()
+        assert not c.roll(0)
+    c.add(20)
+    assert c.roll(100) and c.last == 20 and c.baseline == 1.0
+    c.add(20)
+    assert not c.roll(101)  # cooldown
+    c.add(50)
+    assert c.roll(200)
+
+
+def twitch_node(login, viewers=1, game=True):
+    return {"title": "t", "viewersCount": viewers, "game": {"name": "G"} if game else None,
+            "previewImageURL": "p", "broadcaster": {"login": login, "displayName": login.upper()}}
+
+
+def test_directory(monkeypatch):
+    def gql_resp(q, *a):
+        edge = lambda n: {"node": n}
+        return {"data": {"top": {"edges": [edge(twitch_node("a", 5, False))]},
+                         "games": {"edges": [{"node": {"streams": {"edges": [edge(twitch_node("b", 9)), edge(twitch_node("a", 5, False))]}}}]}}}
+
+    monkeypatch.setattr(directory, "get_json", lambda url, *a: gql_resp(url))
+    tl = directory.twitch_live()
+    assert [t["login"] for t in tl] == ["a", "b"] and tl[0]["category"] == "" and tl[1]["category"] == "G"
+
+    monkeypatch.setattr(directory, "get_json", lambda *a: {"errors": [{"message": "boom"}]})
+    with pytest.raises(RuntimeError, match="boom"):
+        directory.gql("x")
+
+    def ev(slug, thumb, cats):
+        return {"channel": {"slug": slug, "user": {"username": slug}}, "session_title": "s", "categories": cats,
+                "viewer_count": 3, "thumbnail": thumb}
+
+    pages = {1: {"data": [ev("k1", {"src": "s"}, [{"name": "C"}]), ev("k2", {"srcset": "u 1x, v 2x"}, None)], "next_page_url": "n"},
+             2: {"data": [ev("k3", None, [])]}}
+    monkeypatch.setattr(directory, "get_json", lambda url, *a: pages[int(url.split("page=")[1].split("&")[0])])
+    kl = directory.kick_live()
+    assert [k["login"] for k in kl] == ["k1", "k2", "k3"]
+    assert [k["thumb"] for k in kl] == ["s", "u", ""] and kl[0]["category"] == "C" and kl[1]["category"] == ""
+
+    # lookup
+    users = iter([{"data": {"user": {"login": "a", "displayName": "A", "stream": {"title": "t", "viewersCount": 1, "game": None, "previewImageURL": "p"}}}},
+                  {"data": {"user": None}}, {"data": {"user": {"login": "a", "displayName": "A", "stream": None}}}])
+    monkeypatch.setattr(directory, "get_json", lambda *a: next(users))
+    assert directory.lookup("twitch", "a")["name"] == "A"
+    assert directory.lookup("twitch", "a") is None and directory.lookup("twitch", "a") is None
+    ch = {"slug": "k", "user": {"username": "K"}, "livestream": {"session_title": "s", "viewer_count": 2, "categories": [{"name": "C"}], "thumbnail": {"url": "u"}}}
+    chans = iter([ch, {**ch, "livestream": {**ch["livestream"], "categories": None, "thumbnail": None}}, {"livestream": None}])
+    monkeypatch.setattr(directory, "get_json", lambda *a: next(chans))
+    r = directory.lookup("kick", "k")
+    assert r["category"] == "C" and r["thumb"] == "u"
+    r = directory.lookup("kick", "k")
+    assert r["category"] == "" and r["thumb"] == ""
+    assert directory.lookup("kick", "k") is None
+
+
+def test_directory_cache():
+    calls = []
+
+    def ok():
+        calls.append(1)
+        return [{"viewers": 1}, {"viewers": 7}]
+
+    def bad():
+        raise RuntimeError("down")
+
+    d = directory.Directory(ttl=1000, sources={"a": ok, "b": bad})
+    assert [i["viewers"] for i in d.live()] == [7, 1] and d.errors == {"b": "down"}
+    d.live()
+    assert len(calls) == 1
+    assert directory.Directory().sources.keys() == {"twitch", "kick"}
+
+
+def test_count_privmsg():
+    sent = []
+    assert chat.count_privmsg("PING :tmi\r\n:u!u@u PRIVMSG #c :hi\r\n:x NOTICE\r\n:v PRIVMSG #c :yo", sent.append) == 2
+    assert sent == ["PONG :tmi"]
+
+
+def test_twitch_chat_ws():
+    got, stop, frames, done = [], threading.Event(), [], threading.Event()
+
+    def handler(ws):
+        for _ in range(3):
+            frames.append(ws.recv())
+        ws.send("PING :tmi.twitch.tv\r\n")
+        ws.send(":a!a@a PRIVMSG #c :1\r\n:b!b@b PRIVMSG #c :2\r\n")
+        ws.send("PING :x")  # no msgs -> falsy n
+        frames.append(ws.recv())
+        frames.append(ws.recv())
+        done.wait(5)
+
+    with serve(handler, "127.0.0.1", 0) as srv:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        url = f"ws://127.0.0.1:{srv.socket.getsockname()[1]}"
+        t = threading.Thread(target=chat.twitch_chat, args=("c", got.append, stop, url))
+        t.start()
+        for _ in range(100):
+            if got and len(frames) >= 5:
+                break
+            stop.wait(0.05)
+        stop.set()
+        t.join(5)
+        done.set()
+        srv.shutdown()
+    assert frames[0] == "PASS SCHMOOPIIE" and frames[1].startswith("NICK justinfan") and frames[2] == "JOIN #c"
+    assert frames[3:] == ["PONG :tmi.twitch.tv", "PONG :x"] and got == [2]
+
+
+def test_twitch_chat_recv_timeout():
+    stop, done = threading.Event(), threading.Event()
+
+    def handler(ws):
+        done.wait(5)
+
+    with serve(handler, "127.0.0.1", 0) as srv:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        url = f"ws://127.0.0.1:{srv.socket.getsockname()[1]}"
+        t = threading.Thread(target=chat.twitch_chat, args=("c", print, stop, url))
+        t.start()
+        stop.wait(1.3)  # one recv timeout (1s) hits `continue`
+        stop.set()
+        t.join(5)
+        done.set()
+        srv.shutdown()
+    assert not t.is_alive()
+
+
+def test_kick_chat(monkeypatch):
+    stop = threading.Event()
+    polls = iter([{"data": {"messages": [{"id": 1}]}}, {"data": {"messages": [{"id": 1}, {"id": 2}, {"id": 3}]}},
+                  {"data": {"messages": [{"id": 3}]}}])
+    got = []
+
+    def fake(url):
+        if url.endswith("/s"):
+            return {"id": 42}
+        assert "/42/messages" in url
+        return next(polls)
+
+    def on(n):
+        got.append(n)
+
+    def fake2(url):
+        r = fake(url)
+        if "messages" in url and len(got) == 1:
+            stop.set()
+        return r
+
+    monkeypatch.setattr(chat, "get_json", fake2)
+    chat.kick_chat("s", on, stop, interval=0)
+    assert got == [2]
+
+
+def test_run_forever():
+    class P:
+        log = []
+
+        def set(self, s, d=""):
+            self.log.append((s, d))
+
+    stop, calls = threading.Event(), []
+
+    def fn():
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("x" * 200)
+
+    chat.run_forever(fn, P(), stop, backoff=0)
+    assert len(calls) == 2 and P.log[1][0] == "error" and len(P.log[1][1]) == 120 and P.log[-1] == ("ok", "connected")
+    stop.set()
+    chat.run_forever(fn, P(), stop)
+    assert len(calls) == 2
+
+
+def test_category_top(monkeypatch):
+    game = {"data": {"game": {"streams": {"edges": [{"node": twitch_node("t1", 5)}, {"node": twitch_node("t2", 50)}]}}}}
+    kick = {"data": [{"channel": {"slug": "k1", "user": {"username": "K1"}}, "session_title": "s", "categories": None,
+                      "viewer_count": 20, "thumbnail": None}]}
+    urls = []
+
+    def fake(url, *a):
+        urls.append(url)
+        return game if "gql" in url else kick
+
+    monkeypatch.setattr(directory, "get_json", fake)
+    top = directory.category_top("Grand Theft Auto: VI", 2)
+    assert [s["login"] for s in top] == ["t2", "k1"]  # merged, by viewers, cut to n
+    assert "subcategory=grand-theft-auto-vi" in urls[1]
+
+    def unknown_twitch(url, *a):
+        if "gql" in url:
+            return {"data": {"game": None}}
+        raise OSError("kick down")
+
+    monkeypatch.setattr(directory, "get_json", unknown_twitch)
+    assert directory.category_top("x") == []
+
+    def down(url, *a):
+        raise OSError("down")
+
+    monkeypatch.setattr(directory, "get_json", down)
+    assert directory.category_top("x") == []
