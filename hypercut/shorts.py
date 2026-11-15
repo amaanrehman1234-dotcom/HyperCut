@@ -15,7 +15,8 @@ PlayResY: {H}
 WrapStyle: 2
 
 [V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Alignment, MarginL, MarginR, MarginV, BorderStyle, Outline, Shadow
+Format: Name, Fontname, Fontsize, PrimaryColour, OutlineColour, BackColour, Bold, Alignment, MarginL, MarginR, \
+MarginV, BorderStyle, Outline, Shadow
 Style: Cap,{FONT},96,{WHITE},&H00000000,&H80000000,0,5,80,80,0,1,7,3
 Style: Credit,{FONT},44,&H00FFFFFF,&H00000000,&H80000000,0,8,40,40,170,1,4,0
 

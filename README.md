@@ -15,10 +15,10 @@ Chat reacts before anyone has time to clip. A streamer does something wild and c
 | `streamlink` | records the stream the moment it goes live |
 | `chat` | reads chat anonymously, no account and no token |
 | `spikes` | counts chat messages every ten seconds |
-| `ffmpeg` | cuts 30 seconds around every spike |
+| `ffmpeg` | cuts 30 seconds around every spike: 20 before it, 10 after |
 | `whisper` | writes the captions |
 
-Each spike becomes three files: the 30-second clip, an `.srt` caption file, and a 1080×1920 short with captions burned in one word at a time. The spoken word lights up yellow, the way clip channels do it.
+Each spike becomes four files: the 30-second clip, `.srt` and `.vtt` caption files, and a 1080×1920 short with captions burned in one word at a time. The spoken word lights up yellow, the way clip channels do it.
 
 ## The dashboard
 
@@ -28,11 +28,11 @@ The Live tab lists about 1,100 channels live right now across Twitch and Kick, b
 
 <p align="center"><img src="docs/img/watch.png" width="820" alt="Watching a stream with the five-part clipping status panel"></p>
 
-The panel on the right shows each part of the pipeline as it runs, plus a little graph of chat speed. Clip as many channels at once as your machine can handle.
+The panel on the right shows each part of the pipeline as it runs, plus a little graph of chat speed. Clip up to 10 channels at once.
 
 ## Install
 
-You need Python 3.10 or newer and [ffmpeg](https://ffmpeg.org/download.html).
+You need Python 3.10 or newer and [ffmpeg](https://ffmpeg.org/download.html). If ffmpeg or streamlink can't be found, HyperCut says so and exits instead of failing later.
 
 ```bash
 pipx install git+https://github.com/amaanrehman1234-dotcom/HyperCut
@@ -41,13 +41,15 @@ hypercut --open
 
 No pipx? `pip install git+https://github.com/amaanrehman1234-dotcom/HyperCut` works too. The first clip downloads the whisper model (about 150 MB for `base`), so give that one a minute.
 
+Ctrl+C stops it. HyperCut waits up to 60 seconds for clips that are halfway through and then deletes any half-written files, so `clips/` only holds finished clips.
+
 ## Run it all day on one game
 
 ```bash
 hypercut --follow "Grand Theft Auto VI" --top 3
 ```
 
-Every five minutes HyperCut checks who the three biggest live streamers in that game are, across Twitch and Kick together, and clips them side by side. When someone drops out of the top three, their pending clips still finish before it moves on.
+Every five minutes HyperCut checks who the three biggest live streamers in that game are, across Twitch and Kick together, and clips them side by side. When someone drops out of the top three, their pending clips still finish in the background.
 
 It records in 10-second chunks stamped with the real time and throws away anything older than ten minutes. So it can run for days without filling your disk, and Twitch ad breaks don't knock the clips out of sync.
 
@@ -82,7 +84,9 @@ Every finished short gets posted to your Discord channel with the video attached
 --port 8787          --host 127.0.0.1
 ```
 
-Getting no clips? Big chats are steady, so 2.0× can be a high bar. Watch the spikes line in the dashboard (`85 msgs/10s · baseline 72`) and try `--multiplier 1.6`. Getting too many? Push it to 2.5.
+`hypercut --help` lists every flag and `hypercut --version` prints the version.
+
+Getting no clips? Big chats are steady, so 2.0× can be a high bar. Watch the spikes line in the dashboard (`85 msgs/10s · baseline 72.0`) and try `--multiplier 1.6`. Getting too many? Push it to 2.5.
 
 ## Use it with Claude
 
@@ -96,7 +100,7 @@ HyperCut doesn't auto-post to TikTok or Instagram. Both only allow that through 
 
 ## Security
 
-The dashboard only listens on `127.0.0.1` unless you pass `--phone`. It checks the Host and Origin headers, so a random website can't drive it from your browser. Phone mode needs a random key, checked against the connecting address rather than anything the client claims. The code is scanned with `bandit`, `pip-audit` and `detect-secrets` and has had a manual security review. Details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The dashboard only listens on `127.0.0.1` unless you pass `--phone` or change `--host`. It checks the Host header on every request and the Origin header on every POST, so a random website can't drive it from your browser. Phone mode needs a random key, checked against the connecting address rather than anything the client claims. The code is scanned with `bandit`, `pip-audit` and `detect-secrets` and has had a manual security review. Details are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Hacking on it
 
@@ -108,6 +112,6 @@ python scripts/live_test.py                  # clips a random live Twitch + Kick
 python scripts/e2e.py                        # drives the dashboard in a real browser
 ```
 
-Plain Python and the standard library wherever possible. The only dependencies are streamlink, faster-whisper and websockets.
+Plain Python and the standard library wherever possible. The only dependencies are streamlink, faster-whisper and websockets (plus a version pin on PyAV, which faster-whisper needs).
 
 MIT licensed. Caption font is Montserrat ([SIL Open Font License](hypercut/fonts/OFL.txt)).

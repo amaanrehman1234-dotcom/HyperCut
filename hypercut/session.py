@@ -1,3 +1,4 @@
+"""One channel's pipeline: record, read chat, count spikes, cut, caption, render."""
 import queue
 import shutil
 import subprocess
@@ -14,10 +15,13 @@ PARTS = ("streamlink", "chat", "spikes", "ffmpeg", "whisper")
 
 
 class Part:
+    """One pipeline stage as the dashboard shows it: a state plus a line of detail."""
+
     def __init__(self):
         self.state, self.detail = "idle", ""
 
     def set(self, state, detail=""):
+        """Update what the dashboard shows for this stage."""
         self.state, self.detail = state, detail
 
 
@@ -52,12 +56,15 @@ class Session:
 
     @property
     def key(self):
+        """'platform:login', the id sessions go by everywhere."""
         return f"{self.platform}:{self.login}"
 
     def start(self):
+        """Start the four worker threads: record, chat, count, clip."""
         reader = chat.twitch_chat if self.platform == "twitch" else chat.kick_chat
         read = partial(reader, self.login, self.counter.add, self.stop_ev)
-        for fn in (self._record, partial(chat.run_forever, read, self.parts["chat"], self.stop_ev), self._count, self._clip):
+        run_chat = partial(chat.run_forever, read, self.parts["chat"], self.stop_ev)
+        for fn in (self._record, run_chat, self._count, self._clip):
             t = threading.Thread(target=fn, daemon=True)
             t.start()
             self.threads.append(t)
@@ -65,6 +72,7 @@ class Session:
         self.parts["whisper"].set("ok", f"model {self.cfg['whisper_model']}")
 
     def stop(self):
+        """Stop recording and chat. Returns before queued spikes are done; wait() is for that."""
         self.stop_ev.set()
         self.jobs.put(None)
         if self.proc:
@@ -74,7 +82,13 @@ class Session:
         for p in self.parts.values():
             p.set("idle", "stopped")
 
+    def wait(self, timeout):
+        """After stop(): give the clip worker up to timeout seconds to finish queued spikes."""
+        for t in self.threads[3:]:
+            t.join(max(0.0, timeout))
+
     def status(self):
+        """Snapshot for /api/sessions."""
         return {"key": self.key, "platform": self.platform, "login": self.login,
                 "running": sum(p.state in ("ok", "busy") for p in self.parts.values()),
                 "parts": {n: vars(p) for n, p in self.parts.items()},
@@ -93,13 +107,14 @@ class Session:
         while not self.stop_ev.is_set():
             part.set("waiting", "waiting for stream to go live")
             began = time.time()
-            sl = self.proc = subprocess.Popen([self.streamlink, "--retry-streams", "30", "--retry-max", "0", "-O",
-                                               URLS[self.platform].format(self.login), self.cfg["quality"]],
-                                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            ff = subprocess.Popen(["ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-map", "0", "-c", "copy", "-f", "segment",
-                                   "-segment_time", str(seg), "-reset_timestamps", "1", "-strftime", "1",
-                                   str(self.seg_dir / "%s.ts")], stdin=sl.stdout, stdout=subprocess.DEVNULL,
-                                  stderr=subprocess.DEVNULL)
+            sl = self.proc = subprocess.Popen(
+                [self.streamlink, "--retry-streams", "30", "--retry-max", "0", "-O",
+                 URLS[self.platform].format(self.login), self.cfg["quality"]],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            ff = subprocess.Popen(
+                ["ffmpeg", "-loglevel", "error", "-i", "pipe:0", "-map", "0", "-c", "copy", "-f", "segment",
+                 "-segment_time", str(seg), "-reset_timestamps", "1", "-strftime", "1", str(self.seg_dir / "%s.ts")],
+                stdin=sl.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             sl.stdout.close()  # ffmpeg owns the pipe now
             while sl.poll() is None and not self.stop_ev.is_set():
                 segs = self.segments()
@@ -148,8 +163,8 @@ class Session:
                 self.clips += 1
                 ff.set("ok", f"{self.clips} clips")
                 wh.set("busy", f"captioning {dst.name}")
-                segs_, words = clipper.transcribe(dst, cfg["whisper_model"])
-                clipper.write_captions(segs_, dst)
+                lines, words = clipper.transcribe(dst, cfg["whisper_model"])
+                clipper.write_captions(lines, dst)
                 wh.set("busy", f"rendering vertical short {dst.name}")
                 shorts.render(dst, words, URLS[self.platform].format(self.login)[8:], dst.with_suffix(".short.mp4"))
                 wh.set("ok", f"captioned {dst.name}")

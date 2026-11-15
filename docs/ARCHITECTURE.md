@@ -19,7 +19,7 @@ browser ──HTTP──> web.py (ThreadingHTTPServer, 127.0.0.1)
 
 | File | Job |
 |---|---|
-| `__main__.py` | CLI flags → `cfg` dict; starts server, optional follow thread; SIGTERM = Ctrl+C (stops everything cleanly) |
+| `__main__.py` | CLI flags → `cfg` dict; checks `ffmpeg`/`streamlink` are on PATH; starts server, optional follow thread; SIGTERM = Ctrl+C (stops everything cleanly) |
 | `web.py` | Routes, request validation, Host/Origin checks, phone key cookie, `App` (sessions, favorites, clips list, follow) |
 | `directory.py` | `twitch_live`, `kick_live`, `lookup`, `category_top`, `Directory` cache; `NAME` regex for channel names |
 | `net.py` | `get_json`: urllib + JSON |
@@ -36,6 +36,14 @@ Segment files are named by the wall-clock second they start. A spike at time `t`
 `[t − pre, t − pre + clip_length]` from the segments covering that window, with `-ss` measured from the first
 segment's start. Timing errors reset every 10 s segment, so ads and stalls don't add up over a 24/7 run.
 The clip worker waits until the window plus one segment has been recorded.
+
+## Shutdown
+
+`Session.stop()` returns as soon as recording and chat have stopped; the clip worker keeps going in the background
+so the Stop button stays quick. On exit, `App.stop_all(60)` stops every session and then gives all clip workers
+60 s in total to finish what is queued. Whatever is still half-written after that (`.tmp.mp4`, `.short.part.mp4`,
+`.short.ass`) is deleted, and again on the next start in case the process was killed. `App.clips()` never lists
+those names.
 
 ## Security model
 

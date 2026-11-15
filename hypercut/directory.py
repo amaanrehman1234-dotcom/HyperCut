@@ -1,3 +1,4 @@
+"""Who is live on Twitch and Kick, from their public web endpoints (no account)."""
 import json
 import re
 import time
@@ -11,9 +12,11 @@ NAME = re.compile(r"[A-Za-z0-9_-]{1,40}")
 PLATFORMS = ("twitch", "kick")
 
 STREAM_FIELDS = "title viewersCount game{name} previewImageURL(width:440,height:248)"
+NODE = f"node{{{STREAM_FIELDS} broadcaster{{login displayName}}}}"
 
 
 def gql(query):
+    """Run an anonymous Twitch GraphQL query and return its data; raises on a GQL error."""
     d = get_json(TWITCH_GQL, {"query": query}, {"Client-ID": TWITCH_CLIENT_ID})
     if d.get("errors"):
         raise RuntimeError(d["errors"][0]["message"])
@@ -26,6 +29,10 @@ def _twitch(login, name, s):
             "thumb": s["previewImageURL"]}
 
 
+def _node(n):
+    return _twitch(n["broadcaster"]["login"], n["broadcaster"]["displayName"], n)
+
+
 def _kick(e):
     ch = e["channel"]
     thumb = e.get("thumbnail") or {}
@@ -36,15 +43,17 @@ def _kick(e):
 
 
 def twitch_live():
-    # Twitch's anonymous GQL refuses cursor paging, so widen instead: top streams + top 30 categories x 30 streams
-    node = f"node{{{STREAM_FIELDS} broadcaster{{login displayName}}}}"
-    d = gql(f"{{top:streams(first:30){{edges{{{node}}}}} games(first:30){{edges{{node{{streams(first:30){{edges{{{node}}}}}}}}}}}}}")
+    """Live Twitch channels: the top streams plus the top 30 streams of the top 30 categories."""
+    # Twitch's anonymous GQL refuses cursor paging, so widen instead of paging
+    streams = f"streams(first:30){{edges{{{NODE}}}}}"
+    d = gql(f"{{top:{streams} games(first:30){{edges{{node{{{streams}}}}}}}}}")
     edges = d["top"]["edges"] + [e for g in d["games"]["edges"] for e in g["node"]["streams"]["edges"]]
     out = {e["node"]["broadcaster"]["login"]: e["node"] for e in edges}
-    return [_twitch(login, n["broadcaster"]["displayName"], n) for login, n in out.items()]
+    return [_node(n) for n in out.values()]
 
 
 def kick_live(pages=10):
+    """Live Kick channels, up to `pages` pages of 100."""
     out = []
     for p in range(1, pages + 1):
         d = get_json(f"{KICK}/stream/livestreams/en?page={p}&limit=100&sort=desc")
@@ -76,6 +85,7 @@ class Directory:
         self.sources = sources or {"twitch": twitch_live, "kick": kick_live}
 
     def live(self):
+        """All live channels, biggest first; refetched when the cache is older than ttl."""
         if time.time() - self.at > self.ttl:
             items, self.errors = [], {}
             for name, fn in self.sources.items():
@@ -91,14 +101,14 @@ def category_top(name, n=3):
     """Top n live channels in a category across Twitch + Kick (Kick slug = name lowercased, dashed)."""
     out = []
     try:
-        g = gql(f'{{game(name:{json.dumps(name)}){{streams(first:{n}){{edges{{node{{{STREAM_FIELDS} broadcaster{{login displayName}}}}}}}}}}}}')["game"]
-        out += [_twitch(e["node"]["broadcaster"]["login"], e["node"]["broadcaster"]["displayName"], e["node"])
-                for e in (g["streams"]["edges"] if g else [])]
+        g = gql(f'{{game(name:{json.dumps(name)}){{streams(first:{n}){{edges{{{NODE}}}}}}}}}')["game"]
+        out += [_node(e["node"]) for e in (g["streams"]["edges"] if g else [])]
     except Exception:  # one platform down must not stop the other
         pass
     try:
         slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
-        out += [_kick(e) for e in get_json(f"{KICK}/stream/livestreams/en?page=1&limit={n}&sort=desc&subcategory={slug}")["data"]]
+        url = f"{KICK}/stream/livestreams/en?page=1&limit={n}&sort=desc&subcategory={slug}"
+        out += [_kick(e) for e in get_json(url)["data"]]
     except Exception:
         pass
     return sorted(out, key=lambda s: -s["viewers"])[:n]

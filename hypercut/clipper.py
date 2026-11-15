@@ -1,3 +1,4 @@
+"""Cut clips with ffmpeg and caption them with faster-whisper."""
 import os
 import subprocess
 import threading
@@ -6,11 +7,13 @@ _models, _lock = {}, threading.Lock()
 
 
 def cut(src, start, length, dst):
-    """Frame-accurate re-encode (-ss after -i: input seeking on a concat: source drops everything past the first file) of [start, start+length) from a (possibly growing) recording."""
+    """Frame-accurate re-encode of [start, start+length) from a (possibly growing) recording."""
+    # -ss after -i: input seeking on a concat: source drops everything past the first file
     tmp = dst.with_suffix(".tmp.mp4")  # never expose a half-written clip under its final name
     try:
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
-                        "-ss", f"{max(0.0, start):.2f}", "-t", str(length), "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", str(tmp)],
+                        "-ss", f"{max(0.0, start):.2f}", "-t", str(length),
+                        "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac", str(tmp)],
                        check=True, stdin=subprocess.DEVNULL)
         probe = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(tmp)]
         got = subprocess.run(probe, capture_output=True, text=True).stdout.strip()
@@ -36,6 +39,7 @@ def write_captions(segments, base):
 
 
 def transcribe(path, model_name):
+    """Caption a clip: returns ([(start, end, text)] segments, [(start, end, word)] words)."""
     from faster_whisper import WhisperModel  # heavy import, only when first clip is captioned
 
     with _lock:

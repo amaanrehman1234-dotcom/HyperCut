@@ -1,3 +1,4 @@
+"""Dashboard HTTP server and the App that owns sessions, favorites and the clip list."""
 import hmac
 import json
 import mimetypes
@@ -5,6 +6,7 @@ import os
 import re
 import socket
 import threading
+import time
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -16,26 +18,39 @@ from .session import Session
 STATIC = Path(__file__).parent / "static"
 CLIP_NAME = re.compile(r"[A-Za-z0-9_.-]+\.(mp4|vtt|srt)")
 MAX_SESSIONS = 10
+TEMP = (".tmp.mp4", ".short.part.mp4", ".short.ass")  # left by clipper.cut / shorts.render if killed mid-write
 mimetypes.add_type("text/vtt", ".vtt")
 
 
 class App:
+    """Everything the dashboard drives: running sessions, favorites, the clip list, 24/7 follow."""
+
     def __init__(self, out, cfg, dir_=None, session_cls=Session):
         self.out, self.cfg, self.session_cls = Path(out), cfg, session_cls
         self.dir = dir_ or directory.Directory()
         self.sessions, self.lock, self.fav_lock = {}, threading.Lock(), threading.Lock()
         self.fav_path = self.out / "favorites.json"
         self.following = {"category": "", "channels": []}  # served by /api/following before --follow runs
+        self.sweep()  # leftovers from a run that was killed
+
+    def sweep(self):
+        """Delete half-written temp files in clips/."""
+        for p in (self.out / "clips").glob("*"):
+            if p.name.endswith(TEMP):
+                p.unlink(missing_ok=True)
 
     def favorites(self):
+        """Starred channels as ['platform:login'], [] if none saved yet."""
         try:
             return json.loads(self.fav_path.read_text())
         except (OSError, ValueError):  # missing or corrupt
             return []
 
     def set_favorite(self, platform, login, on):
+        """Star or unstar a channel; returns the new list."""
+        key = f"{platform}:{login}"
         with self.fav_lock:
-            favs = [f for f in self.favorites() if f != f"{platform}:{login}"] + ([f"{platform}:{login}"] if on else [])
+            favs = [f for f in self.favorites() if f != key] + ([key] if on else [])
             self.out.mkdir(parents=True, exist_ok=True)
             tmp = self.fav_path.with_suffix(".tmp")
             tmp.write_text(json.dumps(favs))
@@ -43,6 +58,7 @@ class App:
             return favs
 
     def start(self, platform, login):
+        """Start clipping a channel (no-op if it already is); returns its status."""
         with self.lock:
             key = f"{platform}:{login}"
             if key not in self.sessions:
@@ -54,6 +70,7 @@ class App:
             return self.sessions[key].status()
 
     def stop(self, platform, login):
+        """Stop clipping a channel. Clips already queued still finish in the background."""
         with self.lock:
             s = self.sessions.pop(f"{platform}:{login}", None)
         if s:
@@ -76,15 +93,25 @@ class App:
             if stop.wait(every):
                 return
 
-    def stop_all(self):
-        for key in list(self.sessions):
-            self.stop(*key.split(":"))
+    def stop_all(self, wait=0):
+        """Stop every session, give clip workers up to `wait` seconds in total to finish, then tidy clips/."""
+        with self.lock:
+            stopped, self.sessions = list(self.sessions.values()), {}
+        for s in stopped:
+            s.stop()
+        deadline = time.monotonic() + wait
+        for s in stopped:
+            s.wait(deadline - time.monotonic())
+        self.sweep()
 
     def clips(self):
-        d = self.out / "clips"
-        files = sorted((p for p in d.glob("*.mp4") if not p.name.endswith((".tmp.mp4", ".short.mp4", ".part.mp4"))), key=lambda p: p.stat().st_mtime, reverse=True) if d.exists() else []
-        return [{"name": p.name, "captions": p.with_suffix(".vtt").exists(), "short": p.with_suffix(".short.mp4").exists(), "platform": p.name.split("_")[0],
-                 "login": "_".join(p.stem.split("_")[1:-1]), "at": p.stat().st_mtime} for p in files]
+        """Finished clips, newest first. Shorts and half-written temp files are never listed."""
+        skip = (".tmp.mp4", ".part.mp4", ".short.mp4")
+        files = [(p, p.stat().st_mtime) for p in (self.out / "clips").glob("*.mp4") if not p.name.endswith(skip)]
+        return [{"name": p.name, "captions": p.with_suffix(".vtt").exists(),
+                 "short": p.with_suffix(".short.mp4").exists(), "platform": p.name.split("_")[0],
+                 "login": "_".join(p.stem.split("_")[1:-1]), "at": at}
+                for p, at in sorted(files, key=lambda f: f[1], reverse=True)]
 
 
 def channel(q):
@@ -96,6 +123,8 @@ def channel(q):
 
 
 class Handler(BaseHTTPRequestHandler):
+    """Routes plus the Host, Origin and phone-key checks."""
+
     app: App
     hosts: frozenset
     loopback = ("127.0.0.1", "::1")  # peers that skip the --phone key
@@ -103,6 +132,7 @@ class Handler(BaseHTTPRequestHandler):
     timeout = 10  # drop stalled clients
 
     def host_ok(self):
+        """True if this request may proceed; otherwise the refusal has already been sent."""
         host = self.headers.get("Host", "")
         if host not in self.hosts and self.hosts:  # empty hosts = check disabled (--no-host-check)
             self.send(403, {"error": "bad host"})  # DNS rebinding guard
@@ -124,9 +154,10 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def log_message(self, *a):
-        pass
+        """Keep the terminal quiet: no per-request log lines."""
 
     def send(self, code, body, ctype="application/json"):
+        """Send bytes as-is or anything else as JSON, never cached."""
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -136,9 +167,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def file(self, path):
+        """Send a whole file with its guessed content type."""
         self.send(200, path.read_bytes(), mimetypes.guess_type(path.name)[0] or "application/octet-stream")
 
     def do_GET(self):
+        """Pages, /api/* reads and /clips/<name>."""
         u = urlparse(self.path)
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         app = self.app
@@ -173,6 +206,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(502, {"error": str(e)})
 
     def do_POST(self):
+        """/api/start, /api/stop, /api/favorite: small JSON bodies from our own origin only."""
         if not self.host_ok():
             return
         if self.headers.get_content_type() != "application/json":
@@ -198,10 +232,12 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def make_server(app, host="127.0.0.1", port=8787, lan_ip=None, key=None, host_check=True):
+    """Build the HTTP server for app; key turns on the phone-key check, host_check=False drops the Host check."""
     handler = type("BoundHandler", (Handler,), {"app": app, "key": key})
     srv = ThreadingHTTPServer((host, port), handler)
     p = srv.server_address[1]
-    handler.hosts = frozenset({f"127.0.0.1:{p}", f"localhost:{p}"} | ({f"{lan_ip}:{p}"} if lan_ip else set())) if host_check else frozenset()
+    names = ["127.0.0.1", "localhost"] + ([lan_ip] if lan_ip else [])
+    handler.hosts = frozenset(f"{n}:{p}" for n in names) if host_check else frozenset()
     return srv
 
 

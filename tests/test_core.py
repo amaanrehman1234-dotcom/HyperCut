@@ -1,5 +1,4 @@
 import io
-import json
 import threading
 
 import pytest
@@ -44,8 +43,8 @@ def twitch_node(login, viewers=1, game=True):
 def test_directory(monkeypatch):
     def gql_resp(q, *a):
         edge = lambda n: {"node": n}
-        return {"data": {"top": {"edges": [edge(twitch_node("a", 5, False))]},
-                         "games": {"edges": [{"node": {"streams": {"edges": [edge(twitch_node("b", 9)), edge(twitch_node("a", 5, False))]}}}]}}}
+        game = {"node": {"streams": {"edges": [edge(twitch_node("b", 9)), edge(twitch_node("a", 5, False))]}}}
+        return {"data": {"top": {"edges": [edge(twitch_node("a", 5, False))]}, "games": {"edges": [game]}}}
 
     monkeypatch.setattr(directory, "get_json", lambda url, *a: gql_resp(url))
     tl = directory.twitch_live()
@@ -59,7 +58,8 @@ def test_directory(monkeypatch):
         return {"channel": {"slug": slug, "user": {"username": slug}}, "session_title": "s", "categories": cats,
                 "viewer_count": 3, "thumbnail": thumb}
 
-    pages = {1: {"data": [ev("k1", {"src": "s"}, [{"name": "C"}]), ev("k2", {"srcset": "u 1x, v 2x"}, None)], "next_page_url": "n"},
+    pages = {1: {"data": [ev("k1", {"src": "s"}, [{"name": "C"}]), ev("k2", {"srcset": "u 1x, v 2x"}, None)],
+                 "next_page_url": "n"},
              2: {"data": [ev("k3", None, [])]}}
     monkeypatch.setattr(directory, "get_json", lambda url, *a: pages[int(url.split("page=")[1].split("&")[0])])
     kl = directory.kick_live()
@@ -67,13 +67,15 @@ def test_directory(monkeypatch):
     assert [k["thumb"] for k in kl] == ["s", "u", ""] and kl[0]["category"] == "C" and kl[1]["category"] == ""
 
     # lookup
-    users = iter([{"data": {"user": {"login": "a", "displayName": "A", "stream": {"title": "t", "viewersCount": 1, "game": None, "previewImageURL": "p"}}}},
+    stream = {"title": "t", "viewersCount": 1, "game": None, "previewImageURL": "p"}
+    users = iter([{"data": {"user": {"login": "a", "displayName": "A", "stream": stream}}},
                   {"data": {"user": None}}, {"data": {"user": {"login": "a", "displayName": "A", "stream": None}}}])
     monkeypatch.setattr(directory, "get_json", lambda *a: next(users))
     assert directory.lookup("twitch", "a")["name"] == "A"
     assert directory.lookup("twitch", "a") is None and directory.lookup("twitch", "a") is None
-    ch = {"slug": "k", "user": {"username": "K"}, "livestream": {"session_title": "s", "viewer_count": 2, "categories": [{"name": "C"}], "thumbnail": {"url": "u"}}}
-    chans = iter([ch, {**ch, "livestream": {**ch["livestream"], "categories": None, "thumbnail": None}}, {"livestream": None}])
+    ls = {"session_title": "s", "viewer_count": 2, "categories": [{"name": "C"}], "thumbnail": {"url": "u"}}
+    ch = {"slug": "k", "user": {"username": "K"}, "livestream": ls}
+    chans = iter([ch, {**ch, "livestream": {**ls, "categories": None, "thumbnail": None}}, {"livestream": None}])
     monkeypatch.setattr(directory, "get_json", lambda *a: next(chans))
     r = directory.lookup("kick", "k")
     assert r["category"] == "C" and r["thumb"] == "u"

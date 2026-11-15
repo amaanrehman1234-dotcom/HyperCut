@@ -1,3 +1,4 @@
+"""Chat spike detection: 10 s buckets against a rolling median."""
 import statistics
 import threading
 from collections import deque
@@ -15,6 +16,7 @@ class SpikeCounter:
         self.lock = threading.Lock()
 
     def add(self, n=1):
+        """Count n more messages in the current bucket (called from the chat thread)."""
         with self.lock:
             self.count += n
 
@@ -27,7 +29,8 @@ class SpikeCounter:
         warm = len(h) >= self.warmup
         h.append(n)
         self.last = n
-        hit = warm and n >= max(self.min_msgs, self.multiplier * self.baseline) and now - self.last_spike >= self.cooldown
+        big = n >= max(self.min_msgs, self.multiplier * self.baseline)
+        hit = warm and big and now - self.last_spike >= self.cooldown
         if hit:
             self.last_spike = now
         return hit

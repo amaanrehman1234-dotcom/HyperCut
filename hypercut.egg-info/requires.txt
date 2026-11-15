@@ -1,4 +1,0 @@
-streamlink>=8
-faster-whisper>=1.2
-websockets>=15
-av<16

@@ -23,8 +23,17 @@ class FakeSession:
     def stop(self):
         self.stopped = True
 
+    def wait(self, timeout):
+        self.waited = timeout
+
     def status(self):
         return {"key": self.k}
+
+
+@pytest.fixture(autouse=True)
+def tools_on_path(monkeypatch):
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))  # check_tools edits PATH; put it back after each test
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: f"/bin/{tool}")
 
 
 class FakeDir:
@@ -137,10 +146,13 @@ def test_favorites_robust(tmp_path):
 
 def test_clips_skip_tmp(tmp_path):
     d = tmp_path / "clips"
+    app = web.App(tmp_path, {})
+    assert app.clips() == []  # no clips/ folder yet
     d.mkdir()
-    for n in ("kick_a_1.tmp.mp4", "kick_a_1.part.mp4", "kick_a_9.short.mp4"):
+    junk = ("kick_a_1.tmp.mp4", "kick_a_1.short.part.mp4", "kick_a_1.short.ass", "kick_a_9.short.mp4")
+    for n in junk:
         (d / n).write_bytes(b"x")
-    assert web.App(tmp_path, {}).clips() == []
+    assert app.clips() == []  # half-written files are never listed, even mid-render
     (d / "kick_a_2.mp4").write_bytes(b"x")
     (d / "kick_a_3.mp4").write_bytes(b"x")
     (d / "kick_a_3.short.mp4").write_bytes(b"x")
@@ -151,9 +163,26 @@ def test_clips_skip_tmp(tmp_path):
 def test_stop_all(tmp_path):
     app = web.App(tmp_path, {}, FakeDir(), FakeSession)
     app.start("kick", "a")
-    s = app.sessions["kick:a"]
+    app.start("kick", "b")
+    a, b = app.sessions["kick:a"], app.sessions["kick:b"]
+    app.stop_all(60)
+    assert a.stopped and b.stopped and not app.sessions
+    assert 59 < b.waited <= a.waited <= 60  # one shared deadline, not 60s each
+
+
+def test_temp_files_swept_on_start_and_exit(tmp_path):
+    d = tmp_path / "clips"
+    d.mkdir()
+    junk = [d / n for n in ("kick_a_1.tmp.mp4", "kick_a_1.short.part.mp4", "kick_a_1.short.ass")]
+    keep = [d / n for n in ("kick_a_1.mp4", "kick_a_1.short.mp4", "kick_a_1.srt", "kick_a_1.vtt")]
+    for p in junk + keep:
+        p.write_bytes(b"x")
+    app = web.App(tmp_path, {}, FakeDir(), FakeSession)  # startup: a killed run left these behind
+    assert not any(p.exists() for p in junk) and all(p.exists() for p in keep)
+    for p in junk:
+        p.write_bytes(b"x")
     app.stop_all()
-    assert s.stopped and not app.sessions
+    assert not any(p.exists() for p in junk) and all(p.exists() for p in keep)
     assert isinstance(web.App(tmp_path, {}).dir, directory.Directory)
 
 
@@ -271,7 +300,8 @@ def test_phone_key_flow(tmp_path):
         assert raw_get(s, "/api/live", lan)[0] == 401
         assert raw_get(s, "/api/live?key=wrong", lan)[0] == 401
         code, h, _ = raw_get(s, "/api/live?key=sekret", lan)
-        assert code == 303 and h["Location"] == "/" and "hc_key=sekret" in h["Set-Cookie"] and "HttpOnly" in h["Set-Cookie"]
+        assert code == 303 and h["Location"] == "/"
+        assert "hc_key=sekret" in h["Set-Cookie"] and "HttpOnly" in h["Set-Cookie"]
         assert raw_get(s, "/api/live", lan, headers={"Cookie": "a=b; hc_key=sekret"})[0] == 200
         # regression: a LAN peer spoofing a loopback Host header must still need the key
         assert raw_get(s, "/api/live", f"localhost:{p}")[0] == 401
@@ -287,7 +317,8 @@ def test_no_host_check(tmp_path):
     try:
         h = {"Content-Type": "application/json", "Origin": "https://preview.example"}
         assert raw_get(s, "/api/live", "anything.example")[0] == 200
-        code, _, body = raw_get(s, "/api/start", "anything.example", "POST", h, json.dumps({"platform": "kick", "login": "a"}))
+        start = json.dumps({"platform": "kick", "login": "a"})
+        code, _, body = raw_get(s, "/api/start", "anything.example", "POST", h, start)
         assert code == 200 and json.loads(body) == {"key": "kick:a"}
     finally:
         s.shutdown()
@@ -328,7 +359,6 @@ def test_cli_phone_and_no_host_check(tmp_path, monkeypatch, capsys):
 def test_discord_webhook(tmp_path, monkeypatch):
     from hypercut import notify
     from hypercut.web import App
-    import pytest
     for bad in ("http://x", "https://evil.com/api/webhooks/1"):
         with pytest.raises(SystemExit):
             cli.parse(["--discord-webhook", bad])
@@ -344,7 +374,8 @@ def test_discord_webhook(tmp_path, monkeypatch):
     short.write_bytes(b"VIDEO")
     notify.hook(ok, "twitch", "a")(clip)
     body = sent[0].data
-    assert sent[0].full_url == ok and b"\xf0\x9f\x94\xa5 Clip from twitch/a" in body and b'name="files[0]"' in body and b"VIDEO" in body
+    assert sent[0].full_url == ok and b"\xf0\x9f\x94\xa5 Clip from twitch/a" in body
+    assert b'name="files[0]"' in body and b"VIDEO" in body
     monkeypatch.setattr(notify, "MAX_BYTES", 1)
     notify.hook(ok, "twitch", "a")(clip)
     assert b"files[0]" not in sent[1].data
@@ -358,6 +389,32 @@ def test_discord_webhook(tmp_path, monkeypatch):
     app = App(tmp_path, {"discord_webhook": ok}, dir_=object(), session_cls=S)
     app.start("twitch", "z")
     assert created[0].on_clip
+
+
+def test_cli_version_help_and_missing_tools(tmp_path, monkeypatch, capsys):
+    import hypercut
+    with pytest.raises(SystemExit) as e:
+        cli.parse(["--version"])
+    assert e.value.code == 0 and capsys.readouterr().out == f"hypercut {hypercut.__version__}\n" == "hypercut 0.1.0\n"
+    with pytest.raises(SystemExit):
+        cli.parse(["--help"])
+    out = capsys.readouterr().out
+    assert all(f"\n{g}:\n" in out for g in ("Dashboard", "Clipping", "24/7", "Notifications"))
+
+    monkeypatch.setenv("PATH", "/usr/bin" + os.pathsep + "/usr/bin")
+    monkeypatch.setattr(cli.sys, "executable", "/venv/bin/python")
+    cli.check_tools()  # both found: our Python's folder goes first on PATH, once
+    cli.check_tools()
+    assert os.environ["PATH"] == "/venv/bin" + os.pathsep + "/usr/bin"
+
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: None if tool == "ffmpeg" else "/bin/x")
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--port", "0", "--out", str(tmp_path)], serve=False)
+    assert "ffmpeg not found" in e.value.code and "streamlink" not in e.value.code  # a str code exits 1
+    monkeypatch.setattr(cli.shutil, "which", lambda tool: None)
+    with pytest.raises(SystemExit) as e:
+        cli.check_tools()
+    assert "ffmpeg not found" in e.value.code and "streamlink not found" in e.value.code
 
 
 def test_cli_entry_returns_none(monkeypatch):

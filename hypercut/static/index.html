@@ -140,7 +140,7 @@ const ROWS = [
 ];
 const CHECK = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>';
 const CROSS = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
-let live = [], favs = [], sessions = [], shown = 0, filtered = [];
+let live = [], favs = [], sessions = [], shown = 0, filtered = [], liveDown = false;
 
 function card(s) {
   const rec = sessions.some(x => x.key === `${s.platform}:${s.login}`);
@@ -157,6 +157,7 @@ function applyFilters(keep) {
     (!q || `${s.name} ${s.login} ${s.title} ${s.category}`.toLowerCase().includes(q)));
   const depth = keep ? Math.max(shown, 48) : 48;
   shown = 0; $("#grid").innerHTML = ""; more(depth);
+  if (liveDown) $("#grid").innerHTML = '<div class="empty" style="grid-column:1/-1">Couldn\'t reach Twitch or Kick. Check your connection. HyperCut tries again every minute.</div>';
   const fav = live.filter(s => favs.includes(`${s.platform}:${s.login}`));
   $("#favs").innerHTML = fav.length ? `<h2>Favorites live</h2><div class="grid">${fav.map(card).join("")}</div><h2>Everyone live</h2>` : "";
   $("#liveInfo").textContent = `${filtered.length.toLocaleString()} channels live${q || p || c ? " (filtered)" : ""}`;
@@ -170,6 +171,7 @@ new IntersectionObserver(e => e[0].isIntersecting && shown < filtered.length && 
 async function loadLive() {
   try {
     const d = await api("/api/live"); live = d.items; favs = d.favorites;
+    liveDown = !live.length && Object.keys(d.errors).length > 0;
     const cats = [...new Set(live.map(s => s.category).filter(Boolean))].sort();
     const cur = $("#cat").value;
     $("#cat").innerHTML = '<option value="">All categories</option>' + cats.map(c => `<option${c === cur ? " selected" : ""}>${esc(c)}</option>`).join("");
@@ -203,6 +205,7 @@ async function loadSessions() {
   try { sessions = await api("/api/sessions"); } catch { return; }
   api("/api/following").then(f => { $("#following").innerHTML = f ? `24/7 mode: following the top ${f.channels.length} live in <b>${esc(f.category)}</b>` : ""; }).catch(() => {});
   $("#nSessions").textContent = sessions.length ? `(${sessions.length})` : "";
+  document.title = sessions.length ? `(${sessions.length} clipping) HyperCut` : "HyperCut";
   put($("#sessions"), sessions.length ? sessions.map(term).join("") : '<div class="empty">Nothing clipping yet. Open a live channel and press <b>Start clipping</b>.</div>');
   const w = $("#view-watch");
   if (!w.hidden && w.dataset.key) {

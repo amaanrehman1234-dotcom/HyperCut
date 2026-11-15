@@ -1,2 +1,0 @@
-[console_scripts]
-hypercut = hypercut.__main__:cli

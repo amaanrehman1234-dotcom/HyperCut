@@ -4,7 +4,6 @@ import threading
 import time
 import types
 
-import pytest
 
 from hypercut import chat, clipper, session
 from hypercut.session import Session
@@ -13,7 +12,8 @@ CFG = dict(bucket=0.05, clip_length=0, pre=0, multiplier=2, min_msgs=3, cooldown
            whisper_model="tiny", restart_delay=0.01, segment=1, retention=1)
 
 # a fake streamlink: ignores its args and writes live-ish MPEG-TS to stdout (5 fps-paced keyframes every 5 frames)
-FFMPEG_TS = ("ffmpeg -loglevel error -re -f lavfi -i testsrc=size=64x64:rate=10 -t {t} -c:v mpeg2video -g 5 -f mpegts pipe:1")
+FFMPEG_TS = ("ffmpeg -loglevel error -re -f lavfi -i testsrc=size=64x64:rate=10 -t {t} "
+             "-c:v mpeg2video -g 5 -f mpegts pipe:1")
 
 
 def script(tmp_path, name, body):
@@ -28,7 +28,8 @@ def live_script(tmp_path, secs=30):
 
 
 def make_ts(path, secs=2):
-    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", f"testsrc=size=64x64:rate=10:duration={secs}",
+    src = f"testsrc=size=64x64:rate=10:duration={secs}"
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "lavfi", "-i", src,
                     "-c:v", "mpeg2video", "-f", "mpegts", str(path)], check=True)
 
 
@@ -88,7 +89,8 @@ def test_record_stream_ends_waits(tmp_path, monkeypatch):
     monkeypatch.setattr(session, "time", types.SimpleNamespace(time=lambda: next(ticks)))
     t = threading.Thread(target=s._record)
     t.start()
-    wait_for(lambda: s.parts["streamlink"].detail == "streamlink exited (0)" and s.parts["streamlink"].state == "waiting")
+    part = s.parts["streamlink"]
+    wait_for(lambda: part.detail == "streamlink exited (0)" and part.state == "waiting")
     s.stop_ev.set()
     t.join(5)
 
@@ -194,6 +196,19 @@ def test_clip_drains_after_stop_and_cleans_up(tmp_path, monkeypatch):
     s._clip()
     assert len(cuts) == 2 and s.clips == 2
     assert not s.seg_dir.exists()
+
+
+def test_wait_joins_clip_worker(tmp_path):
+    s = Session("kick", "foo", tmp_path, CFG)
+    s.wait(1)  # never started: nothing to wait for
+    go = threading.Event()
+    s.threads = [None, None, None, threading.Thread(target=go.wait, daemon=True)]
+    s.threads[3].start()
+    s.wait(-5)  # past the deadline: returns at once, worker still busy
+    assert s.threads[3].is_alive()
+    go.set()
+    s.wait(10)
+    assert not s.threads[3].is_alive()
 
 
 def test_clip_real_concat_cut(tmp_path, monkeypatch):

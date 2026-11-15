@@ -7,3 +7,5 @@ recordings/
 clips/
 favorites.json
 .pytest_cache/
+build/
+*.egg-info/

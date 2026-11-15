@@ -1,12 +1,13 @@
+"""Anonymous chat readers for Twitch (IRC over WebSocket) and Kick (polling)."""
 import random
 from collections import deque
 
 from websockets.sync.client import connect
 
+from .directory import KICK
 from .net import get_json
 
 TWITCH_IRC = "wss://irc-ws.chat.twitch.tv:443"
-KICK = "https://kick.com"
 
 
 def count_privmsg(frame, send):
@@ -37,7 +38,8 @@ def twitch_chat(login, on_msgs, stop, url=TWITCH_IRC):
 
 def kick_chat(slug, on_msgs, stop, interval=1.0):
     """Poll Kick's public recent-messages endpoint; count unseen ids."""
-    # shortcut: endpoint returns the latest 25 msgs, so >25 msgs/interval undercounts; switch to websocket if Kick reopens it
+    # shortcut: endpoint returns the latest 25 msgs, so >25 msgs/interval undercounts;
+    # switch to websocket if Kick reopens it
     cid = get_json(f"{KICK}/api/v2/channels/{slug}")["id"]
     seen = deque(maxlen=500)
     first = True

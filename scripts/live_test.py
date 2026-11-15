@@ -27,8 +27,9 @@ def main():
     a.add_argument("--minutes", type=float, default=4)
     a = a.parse_args()
     out = Path(tempfile.mkdtemp(prefix="hypercut-live-"))
-    srv = subprocess.Popen([sys.executable, "-m", "hypercut", "--port", str(PORT), "--out", str(out), "--quality", "worst",
-                            "--min-msgs", "2", "--multiplier", "1.3", "--cooldown", "40", "--whisper-model", "tiny"])
+    srv = subprocess.Popen([sys.executable, "-m", "hypercut", "--port", str(PORT), "--out", str(out),
+                            "--quality", "worst", "--min-msgs", "2", "--multiplier", "1.3", "--cooldown", "40",
+                            "--whisper-model", "tiny"])
     try:
         time.sleep(2)
         live = call("/api/live")["items"]
@@ -44,7 +45,8 @@ def main():
         while time.time() < end:
             time.sleep(15)
             for st in call("/api/sessions"):
-                print(st["key"], f'{st["running"]}/5', {k: v["state"] for k, v in st["parts"].items()}, "spikes", st["spikes"], "clips", st["clips"], flush=True)
+                states = {k: v["state"] for k, v in st["parts"].items()}
+                print(st["key"], f'{st["running"]}/5', states, "spikes", st["spikes"], "clips", st["clips"], flush=True)
             clips = call("/api/clips")
             done = {c["platform"] for c in clips if c["captions"]}
             if done >= {"twitch", "kick"}:
@@ -58,7 +60,8 @@ def main():
             ok = [c for c in clips if c["platform"] == plat and c["captions"]]
             assert ok, f"no captioned clip for {plat}"
             mp4 = out / "clips" / ok[0]["name"]
-            dur = float(subprocess.check_output(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(mp4)]))
+            probe = ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(mp4)]
+            dur = float(subprocess.check_output(probe))
             assert 25 <= dur <= 31, f"{plat} clip duration {dur}"
             print(plat, "OK", mp4.name, f"{dur:.1f}s", "\n", mp4.with_suffix(".srt").read_text()[:300])
         print("LIVE TEST PASSED", out)
