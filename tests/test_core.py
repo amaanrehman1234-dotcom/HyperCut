@@ -4,7 +4,7 @@ import threading
 import pytest
 from websockets.sync.server import serve
 
-from hypercut import chat, directory, net
+from hypercut import chat, directory, hype, net
 from hypercut.spikes import SpikeCounter
 
 
@@ -101,9 +101,10 @@ def test_directory_cache():
     assert directory.Directory().sources.keys() == {"twitch", "kick"}
 
 
-def test_count_privmsg():
+def test_parse_privmsg():
     sent = []
-    assert chat.count_privmsg("PING :tmi\r\n:u!u@u PRIVMSG #c :hi\r\n:x NOTICE\r\n:v PRIVMSG #c :yo", sent.append) == 2
+    frame = "PING :tmi\r\n:u!u@u PRIVMSG #c :hi : there\r\n:x NOTICE\r\n:v!v@v PRIVMSG #c :yo"
+    assert chat.parse_privmsg(frame, sent.append) == [("u", "hi : there"), ("v", "yo")]
     assert sent == ["PONG :tmi"]
 
 
@@ -123,7 +124,7 @@ def test_twitch_chat_ws():
     with serve(handler, "127.0.0.1", 0) as srv:
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         url = f"ws://127.0.0.1:{srv.socket.getsockname()[1]}"
-        t = threading.Thread(target=chat.twitch_chat, args=("c", got.append, stop, url))
+        t = threading.Thread(target=chat.twitch_chat, args=("c", lambda *m: got.append(m), stop, url))
         t.start()
         for _ in range(100):
             if got and len(frames) >= 5:
@@ -134,7 +135,7 @@ def test_twitch_chat_ws():
         done.set()
         srv.shutdown()
     assert frames[0] == "PASS SCHMOOPIIE" and frames[1].startswith("NICK justinfan") and frames[2] == "JOIN #c"
-    assert frames[3:] == ["PONG :tmi.twitch.tv", "PONG :x"] and got == [2]
+    assert frames[3:] == ["PONG :tmi.twitch.tv", "PONG :x"] and got == [("a", "1"), ("b", "2")]
 
 
 def test_twitch_chat_recv_timeout():
@@ -158,8 +159,11 @@ def test_twitch_chat_recv_timeout():
 
 def test_kick_chat(monkeypatch):
     stop = threading.Event()
-    polls = iter([{"data": {"messages": [{"id": 1}]}}, {"data": {"messages": [{"id": 1}, {"id": 2}, {"id": 3}]}},
-                  {"data": {"messages": [{"id": 3}]}}])
+    def m(i):
+        return {"id": i, "content": f"t{i}", "sender": {"id": 100 + i}}
+
+    polls = iter([{"data": {"messages": [m(1)]}}, {"data": {"messages": [m(1), m(2), m(3)]}},
+                  {"data": {"messages": [m(3)]}}])
     got = []
 
     def fake(url):
@@ -168,18 +172,18 @@ def test_kick_chat(monkeypatch):
         assert "/42/messages" in url
         return next(polls)
 
-    def on(n):
-        got.append(n)
+    def on(who, text):
+        got.append((who, text))
 
     def fake2(url):
         r = fake(url)
-        if "messages" in url and len(got) == 1:
+        if "messages" in url and len(got) == 2:
             stop.set()
         return r
 
     monkeypatch.setattr(chat, "get_json", fake2)
     chat.kick_chat("s", on, stop, interval=0)
-    assert got == [2]
+    assert got == [(102, "t2"), (103, "t3")]
 
 
 def test_run_forever():
@@ -231,3 +235,50 @@ def test_category_top(monkeypatch):
 
     monkeypatch.setattr(directory, "get_json", down)
     assert directory.category_top("x") == []
+
+
+def test_hype_weight_and_votes():
+    for t in ("KEKW", "that was LUL", "😂", "NO WAY DUDE", "clip it", "!CLIP"):
+        assert hype.weight(t) == 2, t
+    for t in ("hello", "OK", "kekw", "WOW", "clipping this", "I clip it"):
+        assert hype.weight(t) == 1, t
+    assert hype.is_clip(" !clip ") and not hype.is_clip("clip it now")
+
+
+def test_hype_score():
+    assert hype.score(60, 10, 3) == 2.0 and hype.score(5, 0, 3) == 1.67 and hype.score(5, 2, 0) == 2.5
+
+
+def test_hype_title_hashtags_sidecar(tmp_path):
+    assert hype.title([]) == ""
+    assert hype.title([(0, 1, " so anyway "), (1, 2, " no way! ")]) == "no way!"
+    assert hype.title([(0, 1, "so anyway"), (1, 2, "  "), (2, 3, "then")]) == "so anyway"
+    assert hype.title([(0, 1, "x" * 99 + "!"), (1, 2, "we GOT it")]) == "we GOT it"
+    assert hype.title([(0, 1, "a" * 80)]) == "a" * 59 + "…"
+    assert hype.title([(0, 1, "oh my god")]) == "oh my god"
+    assert hype.hashtags("kick", "Foo", "Grand Theft Auto VI") == [
+        "#foo", "#grandtheftautovi", "#kick", "#clips", "#shorts"]
+    assert hype.hashtags("twitch", "foo", "") == ["#foo", "#twitch", "#clips", "#shorts"]
+    p = tmp_path / "a.json"
+    assert hype.read(p) == {}
+    hype.write(p, {"a": 1})
+    assert hype.read(p) == {"a": 1} and not (tmp_path / "a.json.tmp").exists()
+    p.write_text("[1]")
+    assert hype.read(p) == {}
+
+
+def test_kick_emotes_become_names(monkeypatch):
+    stop, got = threading.Event(), []
+    msg = {"id": 1, "content": "[emote:123:KEKW] [emote:4:W]", "sender": {"id": 1}}
+    polls = iter([{"data": {"messages": []}}, {"data": {"messages": [msg]}}])
+
+    def fake(url):
+        if url.endswith("/s"):
+            return {"id": 42}
+        if got:
+            stop.set()
+        return next(polls, {"data": {"messages": []}})
+
+    monkeypatch.setattr(chat, "get_json", fake)
+    chat.kick_chat("s", lambda who, text: got.append(text), stop, interval=0)
+    assert got == ["KEKW W"] and hype.weight(got[0]) == 2

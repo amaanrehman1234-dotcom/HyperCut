@@ -5,6 +5,7 @@ import mimetypes
 import os
 import re
 import socket
+import subprocess
 import threading
 import time
 from http.cookies import SimpleCookie
@@ -12,13 +13,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import directory, notify
+from . import directory, hype, notify, shorts
 from .session import Session
 
 STATIC = Path(__file__).parent / "static"
 CLIP_NAME = re.compile(r"[A-Za-z0-9_.-]+\.(mp4|vtt|srt)")
 MAX_SESSIONS = 10
-TEMP = (".tmp.mp4", ".short.part.mp4", ".short.ass")  # left by clipper.cut / shorts.render if killed mid-write
+STATUSES = ("pending", "approved", "rejected")
+TEMP = (".tmp.mp4", ".short.part.mp4", ".short.ass", ".json.tmp")  # left by clipper.cut / shorts.render if killed mid-write
+SECURITY_HEADERS = (
+    ("Content-Security-Policy", "default-src 'self'; img-src 'self' https: data:; media-src 'self'; "
+     "frame-src https://player.twitch.tv https://player.kick.com; "
+     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
+     "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; "
+     "form-action 'self'"),
+    ("X-Content-Type-Options", "nosniff"),
+    ("Referrer-Policy", "no-referrer"),
+)
 mimetypes.add_type("text/vtt", ".vtt")
 
 
@@ -28,8 +39,10 @@ class App:
     def __init__(self, out, cfg, dir_=None, session_cls=Session):
         self.out, self.cfg, self.session_cls = Path(out), cfg, session_cls
         self.dir = dir_ or directory.Directory()
-        self.sessions, self.lock, self.fav_lock = {}, threading.Lock(), threading.Lock()
-        self.fav_path = self.out / "favorites.json"
+        self.sessions, self.lock = {}, threading.Lock()
+        self.fav_lock = threading.Lock()
+        self.fav_path, self.layout_path = self.out / "favorites.json", self.out / "layouts.json"
+        self.layout_lock = threading.Lock()
         self.following = {"category": "", "channels": []}  # served by /api/following before --follow runs
         self.sweep()  # leftovers from a run that was killed
 
@@ -57,8 +70,47 @@ class App:
             os.replace(tmp, self.fav_path)
             return favs
 
+    def set_status(self, name, status):
+        """Review a clip: pending, approved or rejected. Updates its sidecar atomically; returns the new status."""
+        if (not isinstance(name, str) or not CLIP_NAME.fullmatch(name) or not name.endswith(".mp4")
+                or not (self.out / "clips" / name).is_file()):
+            raise ValueError("no such clip")
+        if status not in STATUSES:
+            raise ValueError("bad status")
+        path = (self.out / "clips" / name).with_suffix(".json")
+        with hype.lock:
+            hype.write(path, {**hype.read(path), "status": status})
+        return {"name": name, "status": status}
+
+    def layout(self, platform, login):
+        """Facecam crop {x, y, w, h} of a channel, or None."""
+        return hype.read(self.layout_path).get(f"{platform}:{login.lower()}")
+
+    def set_layout(self, platform, login, crop):
+        """Save a channel's facecam crop (validated, clamped) or clear it with None; returns {"crop": ...}."""
+        key = f"{platform}:{login.lower()}"
+        with self.layout_lock:
+            layouts = hype.read(self.layout_path)
+            if crop is None:
+                layouts.pop(key, None)
+            else:
+                layouts[key] = shorts.clamp(crop)
+            self.out.mkdir(parents=True, exist_ok=True)
+            hype.write(self.layout_path, layouts)
+            return {"crop": layouts.get(key)}
+
+    def frame(self, platform, login):
+        """JPEG of the first frame of the newest recorded segment, or None if there is no footage."""
+        segs = sorted((self.out / "recordings" / f"{platform}_{login}").glob("*.ts"))
+        if not segs:
+            return None
+        r = subprocess.run(["ffmpeg", "-loglevel", "error", "-i", str(segs[-1]), "-frames:v", "1", "-f", "mjpeg",
+                            "-q:v", "3", "pipe:1"], capture_output=True, timeout=20, stdin=subprocess.DEVNULL)
+        return r.stdout if r.returncode == 0 and r.stdout else None
+
     def start(self, platform, login):
         """Start clipping a channel (no-op if it already is); returns its status."""
+        login = login.lower()
         with self.lock:
             key = f"{platform}:{login}"
             if key not in self.sessions:
@@ -72,7 +124,7 @@ class App:
     def stop(self, platform, login):
         """Stop clipping a channel. Clips already queued still finish in the background."""
         with self.lock:
-            s = self.sessions.pop(f"{platform}:{login}", None)
+            s = self.sessions.pop(f"{platform}:{login.lower()}", None)
         if s:
             s.stop()
         return {"stopped": bool(s)}
@@ -108,7 +160,8 @@ class App:
         """Finished clips, newest first. Shorts and half-written temp files are never listed."""
         skip = (".tmp.mp4", ".part.mp4", ".short.mp4")
         files = [(p, p.stat().st_mtime) for p in (self.out / "clips").glob("*.mp4") if not p.name.endswith(skip)]
-        return [{"name": p.name, "captions": p.with_suffix(".vtt").exists(),
+        return [{"status": "pending", **hype.read(p.with_suffix(".json")),
+                 "name": p.name, "captions": p.with_suffix(".vtt").exists(),
                  "short": p.with_suffix(".short.mp4").exists(), "platform": p.name.split("_")[0],
                  "login": "_".join(p.stem.split("_")[1:-1]), "at": at}
                 for p, at in sorted(files, key=lambda f: f[1], reverse=True)]
@@ -156,6 +209,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         """Keep the terminal quiet: no per-request log lines."""
 
+    def end_headers(self):
+        """Every response (pages, API, redirects, errors) carries the security headers."""
+        for k, v in SECURITY_HEADERS:
+            self.send_header(k, v)
+        super().end_headers()
+
     def send(self, code, body, ctype="application/json"):
         """Send bytes as-is or anything else as JSON, never cached."""
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -187,6 +246,12 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/lookup":
                 item = directory.lookup(*channel(q))
                 return self.send(200 if item else 404, item or {"error": "offline or not found"})
+            if u.path == "/api/layout":
+                return self.send(200, {"crop": app.layout(*channel(q))})
+            if u.path == "/api/frame":
+                jpg = app.frame(*channel(q))
+                return self.send(200 if jpg else 404, jpg or {"error": "no footage yet: start clipping first"},
+                                 "image/jpeg" if jpg else "application/json")
             if u.path == "/api/sessions":
                 return self.send(200, [s.status() for s in list(app.sessions.values())])
             if u.path == "/api/following":
@@ -206,7 +271,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(502, {"error": str(e)})
 
     def do_POST(self):
-        """/api/start, /api/stop, /api/favorite: small JSON bodies from our own origin only."""
+        """/api/start, /api/stop, /api/favorite, /api/clip-status, /api/layout: small JSON bodies from our own origin only."""
         if not self.host_ok():
             return
         if self.headers.get_content_type() != "application/json":
@@ -219,7 +284,13 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 <= n <= 4096:
                 return self.send(413, {"error": "body too large"})
             body = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/clip-status":
+                return self.send(200, self.app.set_status(body.get("name"), body.get("status")))
             platform, login = channel(body)
+            if self.path == "/api/layout":
+                if "crop" not in body:
+                    raise ValueError("crop missing (use null to clear)")
+                return self.send(200, self.app.set_layout(platform, login, body["crop"]))
             if self.path == "/api/start":
                 return self.send(200, self.app.start(platform, login))
             if self.path == "/api/stop":

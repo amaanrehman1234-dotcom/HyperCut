@@ -3,6 +3,7 @@ import json
 import os
 import runpy
 import signal
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -113,6 +114,45 @@ def test_routes(srv, tmp_path, monkeypatch):
     assert req(b, "/clips/x.mp4\n")[0] == 404  # fullmatch: no trailing-newline slip
 
 
+def test_security_headers(srv):
+    _, b = srv
+    for path in ("/", "/api/live", "/nope"):
+        try:
+            r = urllib.request.urlopen(b + path)
+        except urllib.error.HTTPError as e:
+            r = e
+        assert r.headers["X-Content-Type-Options"] == "nosniff" and r.headers["Referrer-Policy"] == "no-referrer"
+        assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+
+
+def test_layout_and_frame(srv, tmp_path):
+    app, b = srv
+    ch = {"platform": "twitch", "login": "Foo"}
+    assert req(b, "/api/layout?platform=twitch&login=foo") == (200, {"crop": None})
+    assert req(b, "/api/layout", {**ch, "crop": {"x": 0.9, "y": 0, "w": 0.3, "h": 0.2}}) == (
+        200, {"crop": {"x": 0.7, "y": 0.0, "w": 0.3, "h": 0.2}})
+    assert req(b, "/api/layout?platform=twitch&login=foo")[1]["crop"]["x"] == 0.7
+    assert req(b, "/api/layout", {**ch, "crop": {"x": "a"}})[0] == 400
+    assert req(b, "/api/layout", ch)[0] == 400  # crop missing
+    assert req(b, "/api/layout", {"platform": "x", "login": "foo", "crop": None})[0] == 400
+    assert req(b, "/api/layout", {**ch, "crop": None}) == (200, {"crop": None})
+    assert (tmp_path / "layouts.json").read_text() == "{}"
+    (tmp_path / "layouts.json").write_text("{corrupt")
+    assert req(b, "/api/layout?platform=twitch&login=foo") == (200, {"crop": None})
+    assert req(b, "/api/layout", {**ch, "crop": None}, headers={"Origin": "http://evil.com"})[0] == 403
+
+    assert req(b, "/api/frame?platform=twitch&login=foo")[0] == 404  # no footage
+    assert req(b, "/api/frame?platform=nope&login=foo")[0] == 400
+    seg = tmp_path / "recordings" / "twitch_foo"
+    seg.mkdir(parents=True)
+    (seg / "1.ts").write_bytes(b"junk")
+    assert req(b, "/api/frame?platform=twitch&login=foo")[0] == 404  # undecodable
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
+                    "-c:v", "mpeg2video", str(seg / "2.ts")], check=True)
+    code, jpg = req(b, "/api/frame?platform=twitch&login=foo")
+    assert code == 200 and jpg[:2] == b"\xff\xd8"
+
+
 def test_guards(srv):
     app, b = srv
     port = b.rsplit(":", 1)[1]
@@ -189,6 +229,7 @@ def test_temp_files_swept_on_start_and_exit(tmp_path):
 def test_cli(tmp_path, monkeypatch):
     a, cfg = cli.parse(["--port", "1", "--bucket", "5"])
     assert a.port == 1 and a.multiplier == 2.0 and cfg["bucket"] == 5 and cfg["restart_delay"] == 30
+    assert cfg["clip_votes"] == 3 and cli.parse(["--clip-votes", "0"])[1]["clip_votes"] == 0
     opened = []
     monkeypatch.setattr(cli.webbrowser, "open", opened.append)
     app = cli.main(["--port", "0", "--out", str(tmp_path), "--open"], serve=False)
@@ -395,7 +436,7 @@ def test_cli_version_help_and_missing_tools(tmp_path, monkeypatch, capsys):
     import hypercut
     with pytest.raises(SystemExit) as e:
         cli.parse(["--version"])
-    assert e.value.code == 0 and capsys.readouterr().out == f"hypercut {hypercut.__version__}\n" == "hypercut 0.1.0\n"
+    assert e.value.code == 0 and capsys.readouterr().out == f"hypercut {hypercut.__version__}\n" == "hypercut 0.2.0\n"
     with pytest.raises(SystemExit):
         cli.parse(["--help"])
     out = capsys.readouterr().out
@@ -422,3 +463,41 @@ def test_cli_entry_returns_none(monkeypatch):
     called = []
     monkeypatch.setattr(m, "main", lambda: called.append(1) or "app")
     assert m.cli() is None and called == [1]  # sys.exit(None) -> status 0
+
+
+def test_clip_status(srv):
+    app, b = srv
+    d = app.out / "clips"
+    d.mkdir()
+    (d / "kick_a_b_1.mp4").write_bytes(b"v")
+    (d / "kick_a_b_2.mp4").write_bytes(b"v")
+    (d / "kick_a_b_2.json").write_text('{"score": 3.5, "status": "pending", "title": "hi"}')
+    got = {c["name"]: c for c in req(b, "/api/clips")[1]}
+    assert got["kick_a_b_1.mp4"]["status"] == "pending" and "score" not in got["kick_a_b_1.mp4"]
+    assert got["kick_a_b_2.mp4"]["score"] == 3.5 and got["kick_a_b_2.mp4"]["login"] == "a_b"
+    assert req(b, "/api/clip-status", {"name": "kick_a_b_2.mp4", "status": "approved"}) == (
+        200, {"name": "kick_a_b_2.mp4", "status": "approved"})
+    assert req(b, "/api/clip-status", {"name": "kick_a_b_1.mp4", "status": "rejected"})[0] == 200  # no sidecar yet
+    got = {c["name"]: c for c in req(b, "/api/clips")[1]}
+    assert got["kick_a_b_2.mp4"]["status"] == "approved" and got["kick_a_b_2.mp4"]["title"] == "hi"
+    assert got["kick_a_b_1.mp4"]["status"] == "rejected" and not list(d.glob("*.tmp"))
+    for body in ({"name": "kick_a_b_2.mp4", "status": "bogus"}, {"name": "kick_a_b_2.mp4", "status": ["x"]},
+                 {"name": "missing.mp4", "status": "approved"}, {"name": "../x.mp4", "status": "approved"},
+                 {"name": "kick_a_b_2.json", "status": "approved"}, {"name": 5, "status": "approved"}, [1]):
+        assert req(b, "/api/clip-status", body)[0] == 400, body
+    assert req(b, "/api/clip-status", {"name": "kick_a_b_2.mp4", "status": "pending"},
+               headers={"Origin": "http://evil.com"})[0] == 403
+    assert req(b, "/api/clip-status", {"name": "kick_a_b_2.mp4", "status": "pending"},
+               headers={"Content-Type": "text/plain"})[0] == 415
+    (d / "x.json.tmp").write_text("{}")
+    app.sweep()
+    assert not (d / "x.json.tmp").exists()
+
+
+def test_layout_and_start_ignore_login_case(srv):
+    app, _ = srv
+    app.set_layout("twitch", "Foo", {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2})
+    assert app.layout("twitch", "foo") == app.layout("twitch", "FOO") and app.layout("twitch", "foo")
+    app.start("twitch", "Foo")
+    assert list(app.sessions) == ["twitch:foo"] and app.start("twitch", "FOO")
+    assert app.stop("twitch", "Foo") == {"stopped": True}

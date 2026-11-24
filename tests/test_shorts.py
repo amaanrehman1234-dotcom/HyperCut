@@ -48,3 +48,27 @@ def test_render_failure_cleans_up(tmp_path):
     with pytest.raises(subprocess.CalledProcessError):
         shorts.render(tmp_path / "missing.mp4", [(0, 1, "a")], "c", dst)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_clamp():
+    assert shorts.clamp({"x": -1, "y": 0.9, "w": 0.01, "h": 5}) == {"x": 0.0, "y": 0.0, "w": 0.05, "h": 1.0}
+    assert shorts.clamp({"x": "0.8", "y": 0.5, "w": 0.5, "h": 0.2}) == {"x": 0.5, "y": 0.5, "w": 0.5, "h": 0.2}
+    for bad in (None, [], {}, {"x": 0, "y": 0, "w": "a", "h": 1}, {"x": 0, "y": 0, "w": float("nan"), "h": 1}):
+        with pytest.raises(ValueError):
+            shorts.clamp(bad)
+
+
+def test_render_split_real(tmp_path):
+    src, dst = tmp_path / "in.mp4", tmp_path / "o.short.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=2:size=320x180:rate=10",
+                    "-f", "lavfi", "-i", "sine=duration=2", "-shortest", str(src)], check=True)
+    shorts.render(src, [(0, 0.5, "hi")], "kick.com/x", dst, crop={"x": 0.7, "y": 0, "w": 0.3, "h": 0.3})
+    assert probe(dst) == (1080, 1920)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["in.mp4", "o.short.mp4"]
+    assert "pos(540,832)" in shorts.build_ass([(0, 1, "a")], "c", 832)
+
+
+def test_render_bad_crop_writes_nothing(tmp_path):
+    with pytest.raises(ValueError):
+        shorts.render(tmp_path / "in.mp4", [], "c", tmp_path / "o.short.mp4", crop={"x": "no"})
+    assert list(tmp_path.iterdir()) == []

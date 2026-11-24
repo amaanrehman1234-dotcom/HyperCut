@@ -27,6 +27,11 @@ def main():
             errors = []
             # third-party Twitch player noise is not ours to fix
             pg.on("pageerror", lambda e: "getLayoutMap" in str(e) or errors.append(str(e)))
+            # CSP refusals and any console error raised by our own origin; embeds log their own noise
+            # (a 404 from /api/frame is the expected "no footage yet" while the first segment records)
+            pg.on("console", lambda m: m.type == "error" and (m.location.get("url", "").startswith(URL)
+                                                              or "Content Security Policy" in m.text)
+                  and "/api/frame" not in m.location.get("url", "") and errors.append(m.text))
 
             pg.goto(URL)
             expect(pg.locator("#grid .card").first).to_be_visible(timeout=60000)
@@ -54,6 +59,33 @@ def main():
             expect(pg.locator("#toggle")).to_have_text("Stop clipping")
             assert pg.title() == "(1 clipping) HyperCut", pg.title()
             pg.screenshot(path=f"{shots}/e2e-watch.png")
+
+            # set facecam: needs a recorded segment, so retry until the first one lands
+            for _ in range(30):
+                pg.click("#camOpen")
+                try:
+                    expect(pg.locator("#cam")).to_be_visible(timeout=3000)
+                    break
+                except AssertionError:
+                    time.sleep(2)
+            expect(pg.locator("#camImg")).to_be_visible()
+            assert pg.evaluate("document.querySelector('#camImg').naturalWidth") > 0
+            r = pg.locator("#stage").bounding_box()
+            pg.mouse.move(r["x"] + r["width"] * .7, r["y"] + r["height"] * .1)
+            pg.mouse.down()
+            pg.mouse.move(r["x"] + r["width"] * .95, r["y"] + r["height"] * .4, steps=5)
+            pg.mouse.up()
+            expect(pg.locator("#camSave")).to_be_enabled()
+            pg.screenshot(path=f"{shots}/e2e-facecam.png")
+            pg.click("#camSave")
+            expect(pg.locator("#camMsg")).to_contain_text("Facecam saved")
+            crop = pg.evaluate(f"fetch('/api/layout?platform=twitch&login={login}').then(r => r.json())")["crop"]
+            assert 0.65 < crop["x"] < 0.75 and 0.2 < crop["w"] < 0.3, crop
+            pg.click("#camOpen")
+            expect(pg.locator("#camBox")).to_be_visible()  # saved box comes back
+            pg.click("#camClear")
+            expect(pg.locator("#camMsg")).to_contain_text("removed")
+            assert pg.evaluate(f"fetch('/api/layout?platform=twitch&login={login}').then(r => r.json())")["crop"] is None
 
             pg.click("[data-tab=clipping]")
             expect(pg.locator("#sessions .term")).to_have_count(1)
