@@ -85,6 +85,13 @@ h2{font-size:20px;margin:24px 0 12px;letter-spacing:-.01em}
 .empty{padding:40px;text-align:center;border:1px dashed var(--line);border-radius:12px;color:var(--muted)}
 .clips video{width:100%;aspect-ratio:16/9;background:#000;display:block}
 .err{color:var(--err)}
+.cliptools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
+.pill.score{left:8px;right:auto;top:8px;background:var(--accent);color:var(--on-accent)}
+.clips .vid{position:relative}
+.review{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.review .btn{min-height:44px;padding:0 12px}
+.review .btn[aria-pressed=true].rej{background:var(--err);border-color:var(--err);color:var(--on-accent)}
+.ttl{width:100%;margin-top:8px;resize:none;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:8px;font:14px/1.4 var(--sans)}
 .sr,.filters label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 #more{height:1px}
 </style>
@@ -120,7 +127,12 @@ h2{font-size:20px;margin:24px 0 12px;letter-spacing:-.01em}
     <div id="more"></div>
   </section>
   <section id="view-clipping" hidden><p class="muted" id="following" aria-live="polite"></p><p class="err" id="sessMsg" aria-live="polite"></p><div class="grid" id="sessions" style="grid-template-columns:repeat(auto-fill,minmax(340px,1fr))"></div></section>
-  <section id="view-clips" hidden><div class="grid clips" id="clips"></div></section>
+  <section id="view-clips" hidden>
+    <div class="cliptools"><button class="btn" id="sort" aria-pressed="true">Sorted by score</button>
+      <label class="sr" for="cstatus">Show clips</label>
+      <select id="cstatus"><option value="">Hide rejected</option><option value="all">All</option><option value="pending">Pending</option><option value="approved">Approved</option><option value="rejected">Rejected</option></select>
+      <span class="err" id="clipMsg" aria-live="polite"></span></div>
+    <div class="grid clips" id="clips"></div></section>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -216,14 +228,42 @@ async function loadSessions() {
   }
 }
 
+let clipData = [], bySpikes = true;
+const playing = () => [...document.querySelectorAll("#clips video")].some(v => !v.paused);
+function renderClips() {
+  const f = $("#cstatus").value;
+  const c = clipData.filter(x => f === "all" || (f ? x.status === f : x.status !== "rejected"))
+    .sort((a, b) => bySpikes ? (b.score ?? -1) - (a.score ?? -1) || b.at - a.at : b.at - a.at);
+  const sort = $("#sort"); sort.textContent = bySpikes ? "Sorted by score" : "Sorted by newest"; sort.setAttribute("aria-pressed", bySpikes);
+  put($("#clips"), c.length ? c.map(x => `<article class="card" style="cursor:default" data-clip="${esc(x.name)}">
+    <div class="vid"><video controls preload="metadata" src="/clips/${esc(x.name)}" aria-label="Clip from ${esc(x.login)}">${x.captions ? `<track kind="captions" src="/clips/${esc(x.name.replace(/\.mp4$/, ".vtt"))}" srclang="en" label="Captions" default>` : ""}</video>
+    ${x.score != null ? `<span class="pill score" title="Chat activity vs. usual, hype messages count double">Hype ${esc(x.score)}x</span>` : ""}</div>
+    <div class="meta"><b>${esc(x.login)}</b><span>${esc(x.platform)}${x.category ? " · " + esc(x.category) : ""} · ${new Date(x.at * 1000).toLocaleString()}</span>
+    <span><a href="/clips/${esc(x.name)}" download>Download mp4</a>${x.captions ? ` · <a href="/clips/${esc(x.name.replace(/\.mp4$/, ".srt"))}" download>srt</a>` : ""}${x.short ? ` · <a href="/clips/${esc(x.name.replace(/\.mp4$/, ".short.mp4"))}" download>Vertical short (9:16)</a>` : ""}</span>
+    <div class="review"><button class="btn" data-review="approved" aria-pressed="${x.status === "approved"}">Approve</button>
+      <button class="btn rej" data-review="rejected" aria-pressed="${x.status === "rejected"}">Reject</button></div>
+    ${x.title ? `<textarea class="ttl" readonly rows="3" aria-label="Title and hashtags">${esc(x.title + "\n" + (x.hashtags || []).join(" "))}</textarea>
+    <button class="btn" data-copy>Copy title</button>` : ""}</div></article>`).join("")
+    : '<div class="empty">No clips to show. They appear here when chat spikes.</div>');
+}
 async function loadClips() {
   const c = await api("/api/clips");
-  if ([...document.querySelectorAll("#clips video")].some(v => !v.paused)) return;  // don't yank a playing clip
-  put($("#clips"), c.length ? c.map(x => `<article class="card" style="cursor:default">
-    <video controls preload="metadata" src="/clips/${esc(x.name)}" aria-label="Clip from ${esc(x.login)}">${x.captions ? `<track kind="captions" src="/clips/${esc(x.name.replace(/\.mp4$/, ".vtt"))}" srclang="en" label="Captions" default>` : ""}</video>
-    <div class="meta"><b>${esc(x.login)}</b><span>${esc(x.platform)} · ${new Date(x.at * 1000).toLocaleString()}</span>
-    <span><a href="/clips/${esc(x.name)}" download>Download mp4</a>${x.captions ? ` · <a href="/clips/${esc(x.name.replace(/\.mp4$/, ".srt"))}" download>srt</a>` : ""}${x.short ? ` · <a href="/clips/${esc(x.name.replace(/\.mp4$/, ".short.mp4"))}" download>Vertical short (9:16)</a>` : ""}</span></div></article>`).join("")
-    : '<div class="empty">No clips yet. They appear here when chat spikes.</div>');
+  if (playing()) return;  // don't yank a playing clip
+  clipData = c; renderClips();
+}
+async function review(card, status) {
+  const x = clipData.find(c => c.name === card.dataset.clip), next = x.status === status ? "pending" : status;
+  $("#clipMsg").textContent = "";
+  try { await api("/api/clip-status", {name: x.name, status: next}); } catch (e) { $("#clipMsg").textContent = e.message; return; }
+  x.status = next;
+  card.querySelectorAll("[data-review]").forEach(b => b.setAttribute("aria-pressed", b.dataset.review === next));
+  if (!playing()) renderClips();  // re-filter; skipped while a clip plays so it isn't interrupted
+}
+async function copyTitle(btn) {
+  const ta = btn.previousElementSibling;
+  try { await navigator.clipboard.writeText(ta.value); btn.textContent = "Copied"; }
+  catch { ta.focus(); ta.select(); btn.textContent = "Press Ctrl+C"; }  // no clipboard access (plain http on a phone)
+  setTimeout(() => { btn.textContent = "Copy title"; }, 2000);
 }
 
 function embed(p, l) {
@@ -276,6 +316,10 @@ document.addEventListener("click", async e => {
   if (c) { tab("live"); location.hash = `#/watch/${c.dataset.p}/${c.dataset.l}`; return; }
   const t = e.target.closest("[data-tab]");
   if (t) { tab(t.dataset.tab); if (location.hash.startsWith("#/watch")) location.hash = "#/"; return; }
+  const rv = e.target.closest("[data-review]");
+  if (rv) return review(rv.closest("[data-clip]"), rv.dataset.review);
+  const cp = e.target.closest("[data-copy]");
+  if (cp) return copyTitle(cp);
   const s = e.target.closest("[data-stop]");
   if (s) { const [p, l] = s.dataset.stop.split(":"); s.disabled = true; $("#sessMsg").textContent = "";
     try { await api("/api/stop", {platform: p, login: l}); } catch (err) { $("#sessMsg").textContent = err.message; } finally { s.disabled = false; }
@@ -291,6 +335,8 @@ $("#filters").addEventListener("submit", async e => {
   }
   $("#liveInfo").innerHTML = `<span class="err">${esc(q)} isn't live right now.</span>`;
 });
+$("#sort").onclick = () => { bySpikes = !bySpikes; renderClips(); };
+$("#cstatus").onchange = renderClips;
 ["#q", "#plat", "#cat"].forEach(s => $(s).addEventListener("input", () => applyFilters()));
 addEventListener("hashchange", route);
 
