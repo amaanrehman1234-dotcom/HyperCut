@@ -28,6 +28,8 @@ Source and docs: https://github.com/amaanrehman1234-dotcom/HyperCut (`docs/ARCHI
 | Clip a category around the clock | `hypercut --follow "Grand Theft Auto VI" --top 3` |
 | Clip one channel without the UI | start the server, then `curl -XPOST -H 'Content-Type: application/json' 127.0.0.1:8787/api/start -d '{"platform":"twitch","login":"NAME"}'` |
 | More / fewer clips | lower / raise `--multiplier` (default 2.0) and `--min-msgs` (default 10) |
+| Clip on chat request | `--clip-votes N` (default 3 chatters saying `!clip` within 15 s; 0 = off) |
+| Facecam on top of shorts | dashboard: watch the channel, Start clipping, wait ~20 s, **Set facecam**, drag a box. Or `curl -XPOST -H 'Content-Type: application/json' 127.0.0.1:8787/api/layout -d '{"platform":"twitch","login":"NAME","crop":{"x":0.7,"y":0.3,"w":0.3,"h":0.35}}'` (fractions 0..1; `"crop":null` clears). See the frame first: `curl 127.0.0.1:8787/api/frame?platform=twitch\&login=NAME -o f.jpg` |
 | Discord ping per clip | add `--discord-webhook https://discord.com/api/webhooks/...` |
 | Better captions | `--whisper-model small` (slower) |
 | Behind a trusted preview proxy only | `--no-host-check` (never on an open network) |
@@ -38,7 +40,7 @@ Category names must match Twitch's exact name; the Kick slug is derived (lowerca
 ## Where output goes
 
 `<out>/clips/`: `<platform>_<login>_<YYYYmmdd-HHMMSS>.mp4` (30 s), `.srt`, `.vtt`, `.short.mp4` (1080×1920,
-burned-in word-by-word captions). `<out>/recordings/<platform>_<login>/` holds rolling 10 s segments
+burned-in word-by-word captions), `.json` (hype score, title, hashtags, review `status`). `<out>/layouts.json` holds facecam crops per channel. `<out>/recordings/<platform>_<login>/` holds rolling 10 s segments
 (deleted after 10 min and on stop).
 
 ## Checking it works
@@ -62,6 +64,12 @@ burned-in word-by-word captions). `<out>/recordings/<platform>_<login>/` holds r
   - Twitch anonymous GQL allows `first` ≤ 30 and refuses cursor paging; Kick's Pusher chat key is dead, so
     Kick chat is polled (25 newest per second; very fast chats undercount).
   - faster-whisper 1.2 needs `av<16`.
+  - `/api/frame` only works while the channel records (it reads the newest `.ts` segment); no session = 404.
+  - The split layout reads `layouts.json` at render time, not at spike time. Gameplay is a center crop, so a corner
+    facecam can leave a sliver in the bottom half.
+  - Spikes and `!clip` votes must go through `SpikeCounter.claim` (locked); touching `last_spike` directly brings back a double-clip race.
+  - The CSP in `web.SECURITY_HEADERS` blocks anything not listed (e.g. `blob:` images, other API hosts); new front-end
+    features that load from elsewhere need it widened, and e2e fails on CSP console errors.
 
 ## Not supported, and why
 

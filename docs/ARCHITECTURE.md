@@ -24,11 +24,21 @@ browser ──HTTP──> web.py (ThreadingHTTPServer, 127.0.0.1)
 | `directory.py` | `twitch_live`, `kick_live`, `lookup`, `category_top`, `Directory` cache; `NAME` regex for channel names |
 | `net.py` | `get_json`: urllib + JSON |
 | `chat.py` | Anonymous chat readers + `run_forever` reconnect loop |
-| `spikes.py` | 10 s buckets; spike = bucket ≥ max(min_msgs, multiplier × median of last 30 buckets), after 3-bucket warm-up, 30 s cooldown |
+| `hype.py` | Hype score, `!clip` vote detection, title and hashtags, `<clip>.json` sidecar read/write (atomic; also used for `layouts.json`) |
+| `spikes.py` | 10 s buckets; spike = bucket ≥ max(min_msgs, multiplier × median of last 30 buckets), after 3-bucket warm-up, 30 s cooldown; `claim()` is the one locked check-and-set of `last_spike` that spikes and `!clip` votes both go through |
 | `session.py` | Per-channel pipeline and its 5 status parts (streamlink, chat, spikes, ffmpeg, whisper) |
 | `clipper.py` | `cut` (temp file → rename, rejects empty output), `transcribe` (faster-whisper, VAD, word timestamps), `write_captions` (.srt + .vtt) |
-| `shorts.py` | ASS subtitles (3 words per line, current word yellow and enlarged) + ffmpeg blurred-background vertical render |
+| `shorts.py` | ASS subtitles (3 words per line, current word yellow and enlarged) + ffmpeg vertical render: blurred background, or with a facecam crop a split layout (crop on top 672 px, gameplay center-crop below, captions at the seam). `clamp` validates crops |
 | `static/index.html` | Whole dashboard (inline CSS/JS): Live grid, Watch (official embeds), Clipping cards, Clips gallery |
+
+## Routes
+
+`GET /api/live | lookup | sessions | following | clips`, `GET /clips/<name>`, plus:
+
+- `GET /api/frame?platform=&login=`: JPEG of the first frame of the newest recorded segment (ffmpeg). 404 if there is no footage.
+- `GET /api/layout?platform=&login=` → `{"crop": {x,y,w,h} | null}`.
+- `POST /api/layout {platform, login, crop}`: crop is fractions of the frame, clamped inside it with w, h ≥ 0.05; `null` clears. Stored in `<out>/layouts.json` (lock + atomic write; a corrupt file reads as `{}`). `Session._clip` reads it when it renders, so edits apply to the next short.
+- `POST /api/clip-status {name, status}`: pending, approved or rejected, written to the clip's sidecar.
 
 ## Timing
 
@@ -52,6 +62,10 @@ those names.
   Bodies are capped at 4 KB, there are at most 10 sessions, and the socket timeout is 10 s.
 - `--phone` binds `0.0.0.0` and adds the LAN IP. Non-localhost clients must present a random key once
   (`?key=` → HttpOnly cookie).
+- Every response (`Handler.end_headers`) carries `Content-Security-Policy` (self, plus the Twitch/Kick player frames,
+  Google Fonts and https images), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. The dashboard
+  is one file with inline script and style, hence `'unsafe-inline'`; anything new that loads from another host
+  (a script, an API call, an image over http) needs the policy in `web.SECURITY_HEADERS` changed.
 - Subprocesses get list arguments (no shell). Channel names are regex-validated (`re.fullmatch`). Clip file
   serving only allows `[A-Za-z0-9_.-]+.(mp4|vtt|srt)`.
 
