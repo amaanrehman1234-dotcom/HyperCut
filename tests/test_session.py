@@ -5,11 +5,11 @@ import time
 import types
 
 
-from hypercut import chat, clipper, session
+from hypercut import chat, clipper, directory, hype, session
 from hypercut.session import Session
 
 CFG = dict(bucket=0.05, clip_length=0, pre=0, multiplier=2, min_msgs=3, cooldown=0, quality="best",
-           whisper_model="tiny", restart_delay=0.01, segment=1, retention=1)
+           whisper_model="tiny", restart_delay=0.01, segment=1, retention=1, clip_votes=3)
 
 # a fake streamlink: ignores its args and writes live-ish MPEG-TS to stdout (5 fps-paced keyframes every 5 frames)
 FFMPEG_TS = ("ffmpeg -loglevel error -re -f lavfi -i testsrc=size=64x64:rate=10 -t {t} "
@@ -97,16 +97,19 @@ def test_record_stream_ends_waits(tmp_path, monkeypatch):
 
 def test_start_stop_both_platforms(tmp_path, monkeypatch):
     def reader(login, on, stop):
-        on(10)
+        for i in range(10):
+            on(i, "hi")
         stop.wait(5)
 
+    monkeypatch.setattr(directory, "lookup", lambda p, l: {"category": "Chess"})
     monkeypatch.setattr(chat, "twitch_chat", reader)
     monkeypatch.setattr(chat, "kick_chat", reader)
     for plat in ("twitch", "kick"):
         s = Session(plat, "foo", tmp_path / plat, CFG, streamlink=script(tmp_path, "sl" + plat, "sleep 30"))
         s.start()
         assert s.parts["whisper"].detail == "model tiny"
-        wait_for(lambda: s.parts["chat"].state == "ok" and s.counter.last >= 10)
+        wait_for(lambda: s.parts["chat"].state == "ok" and s.counter.count + s.counter.last >= 10)
+        wait_for(lambda: s.category == "Chess")
         s.stop()
         wait_for(lambda: not any(t.is_alive() for t in s.threads))  # clip worker drains in the background
         assert not s.seg_dir.exists()
@@ -114,6 +117,7 @@ def test_start_stop_both_platforms(tmp_path, monkeypatch):
 
 def test_count_spike(tmp_path):
     s = Session("twitch", "foo", tmp_path, CFG)
+    s.msgs.append((time.time() - 100, 1))  # older than retention: pruned
     t = threading.Thread(target=s._count)
     t.start()
     for _ in range(5):
@@ -122,8 +126,8 @@ def test_count_spike(tmp_path):
     wait_for(lambda: s.spikes >= 1)
     s.stop_ev.set()
     t.join(5)
-    job = s.jobs.get_nowait()
-    assert abs(job - time.time()) < 10 and len(s.series) <= 30 and "msgs/0.05s" in s.parts["spikes"].detail
+    at, trigger, base = s.jobs.get_nowait()
+    assert not s.msgs and abs(at - time.time()) < 10 and trigger == "spike" and base >= 0 and len(s.series) <= 30 and "msgs/0.05s" in s.parts["spikes"].detail
 
 
 def stub_pipeline(monkeypatch):
@@ -148,7 +152,7 @@ def test_clip_stubbed(tmp_path, monkeypatch):
     now = time.time() - 100
 
     s.seg_dir.mkdir(parents=True)
-    s.jobs.put(now)  # no footage at all
+    s.jobs.put((now, "spike", 2.0))  # no footage at all
     s.jobs.put(None)
     s._clip()
     assert s.clips == 0 and not cuts and s.parts["ffmpeg"].detail == "spike skipped: no footage recorded"
@@ -158,7 +162,7 @@ def test_clip_stubbed(tmp_path, monkeypatch):
     names = [int(t0) - 9, int(t0) + 3, int(t0) + 30, int(t0) - 50]  # last two fall outside [t0-10, t0+20]
     for n in names:
         (s.seg_dir / f"{n}.ts").write_bytes(b"x")
-    s.jobs.put(now)
+    s.jobs.put((now, "spike", 2.0))
     s.jobs.put(None)
     s._clip()
     src, off, length, name = cuts[0]
@@ -170,14 +174,14 @@ def test_clip_stubbed(tmp_path, monkeypatch):
     assert s.parts["whisper"].detail.startswith("captioned twitch_foo_") and s.parts["ffmpeg"].detail == "1 clips"
 
     monkeypatch.setattr(clipper, "cut", boom)
-    s.jobs.put(now)
+    s.jobs.put((now, "spike", 2.0))
     s.jobs.put(None)
     s._clip()
     assert s.parts["ffmpeg"].state == "error" and s.parts["ffmpeg"].detail == "cut fail"
 
     monkeypatch.setattr(clipper, "cut", lambda *a: None)
     monkeypatch.setattr(clipper, "transcribe", boom)
-    s.jobs.put(now)
+    s.jobs.put((now, "spike", 2.0))
     s.jobs.put(None)
     s._clip()
     assert s.parts["whisper"].state == "error"
@@ -190,8 +194,8 @@ def test_clip_drains_after_stop_and_cleans_up(tmp_path, monkeypatch):
     s.seg_dir.mkdir(parents=True)
     (s.seg_dir / f"{int(now) - 3}.ts").write_bytes(b"x")
     s.stop_ev.set()  # stopped with spikes still queued: they are cut with what exists, wait is skipped
-    s.jobs.put(now)
-    s.jobs.put(now)
+    s.jobs.put((now, "spike", 2.0))
+    s.jobs.put((now, "spike", 2.0))
     s.jobs.put(None)
     s._clip()
     assert len(cuts) == 2 and s.clips == 2
@@ -222,7 +226,7 @@ def test_clip_real_concat_cut(tmp_path, monkeypatch):
     monkeypatch.setattr(session.shorts, "render", lambda *a: None)
     hooked = []
     s.on_clip = hooked.append
-    s.jobs.put(base + 8)  # t0 = base+5: 1s of seg 1 + 3s of seg 2 (input-side -ss would truncate to 1s)
+    s.jobs.put((base + 8, "spike", 2.0))  # t0 = base+5: 1s of seg 1 + 3s of seg 2 (input-side -ss would truncate to 1s)
     s.jobs.put(None)
     s._clip()
     assert s.clips == 1 and s.parts["ffmpeg"].detail == "1 clips"
@@ -263,3 +267,51 @@ def test_record_stop_during_popen(tmp_path, monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", popen)
     s._record()
     assert s.proc.poll() is not None
+
+
+def test_on_msg_votes_and_cooldown(tmp_path):
+    s = Session("twitch", "foo", tmp_path, {**CFG, "cooldown": 60})
+    s.on_msg("a", "KEKW")
+    for who in ("a", "a", "b"):  # a repeat voter counts once
+        s.on_msg(who, "!clip")
+    assert s.jobs.empty() and s.counter.count == 4 and s.msgs[0][1] == 2
+    s.votes["old"] = time.time() - 100  # a stale vote has expired
+    s.on_msg("c", "clip it")
+    at, trigger, base = s.jobs.get_nowait()
+    assert trigger == "votes" and s.votes == {} and s.counter.last_spike == at
+    for who in "abc":  # same cooldown as spikes: no second clip
+        s.on_msg(who, "clip")
+    assert s.jobs.empty()
+    off = Session("twitch", "bar", tmp_path, {**CFG, "clip_votes": 0})
+    for who in "abc":
+        off.on_msg(who, "clip")
+    assert off.jobs.empty()
+
+
+def test_lookup_category(tmp_path, monkeypatch):
+    s = Session("kick", "foo", tmp_path, CFG)
+    monkeypatch.setattr(directory, "lookup", lambda p, l: None)  # offline
+    s._lookup()
+    monkeypatch.setattr(directory, "lookup", lambda p, l: {"category": "Chess"})
+    s._lookup()
+    assert s.category == "Chess"
+
+
+def test_clip_sidecar(tmp_path, monkeypatch):
+    cfg = {**CFG, "clip_length": 20, "pre": 5, "segment": 10, "bucket": 10}
+    s = Session("twitch", "Foo", tmp_path, cfg)
+    s.category = "Just Chatting"
+    stub_pipeline(monkeypatch)
+    monkeypatch.setattr(clipper, "transcribe", lambda p, m: ([(0, 1, "no way!")], []))
+    now = time.time() - 100
+    s.seg_dir.mkdir(parents=True)
+    (s.seg_dir / f"{int(now) - 10}.ts").write_bytes(b"x")
+    s.msgs.extend([(now - 5, 2), (now + 10, 1), (now - 50, 1), (now + 40, 1)])  # last two outside the window
+    s.jobs.put((now, "votes", 1.5))
+    s.jobs.put(None)
+    s._clip()
+    (side,) = (tmp_path / "clips").glob("*.json")
+    assert hype.read(side) == {
+        "score": 1.0, "msgs": 2, "baseline": 1.5, "platform": "twitch", "login": "Foo", "category": "Just Chatting",
+        "spike_at": round(now, 1), "title": "no way!", "status": "pending", "trigger": "votes",
+        "hashtags": ["#foo", "#justchatting", "#twitch", "#clips", "#shorts"]}

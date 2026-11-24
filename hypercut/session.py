@@ -4,14 +4,16 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from functools import partial
 
-from . import chat, clipper, shorts
+from . import chat, clipper, directory, hype, shorts
 from .spikes import SpikeCounter
 
 URLS = {"twitch": "https://twitch.tv/{}", "kick": "https://kick.com/{}"}
 PARTS = ("streamlink", "chat", "spikes", "ffmpeg", "whisper")
+VOTE_WINDOW = 15  # seconds in which N distinct chatters must ask for a clip
 
 
 class Part:
@@ -52,6 +54,9 @@ class Session:
         self.on_clip = None  # hook for uploaders: called with each finished clip path
         self.clips = self.spikes = 0
         self.series = []  # last 30 bucket counts for the sparkline
+        self.msgs = deque()  # (time, weight) of recent chat messages, for the hype score
+        self.votes = {}  # chatter -> time of their latest clip request
+        self.category = ""
         self.threads = []
 
     @property
@@ -62,14 +67,35 @@ class Session:
     def start(self):
         """Start the four worker threads: record, chat, count, clip."""
         reader = chat.twitch_chat if self.platform == "twitch" else chat.kick_chat
-        read = partial(reader, self.login, self.counter.add, self.stop_ev)
+        read = partial(reader, self.login, self.on_msg, self.stop_ev)
         run_chat = partial(chat.run_forever, read, self.parts["chat"], self.stop_ev)
         for fn in (self._record, run_chat, self._count, self._clip):
             t = threading.Thread(target=fn, daemon=True)
             t.start()
             self.threads.append(t)
+        threading.Thread(target=self._lookup, daemon=True).start()
         self.parts["ffmpeg"].set("ok", "ready")
         self.parts["whisper"].set("ok", f"model {self.cfg['whisper_model']}")
+
+    def _lookup(self):
+        try:
+            self.category = directory.lookup(self.platform, self.login)["category"]
+        except Exception:  # offline or directory down: the category stays empty
+            pass
+
+    def on_msg(self, who, text):
+        """Chat thread: count the message, weigh it for the hype score, and queue a clip on enough !clip votes."""
+        now = time.time()
+        self.counter.add()
+        self.msgs.append((now, hype.weight(text)))
+        votes = self.cfg["clip_votes"]
+        if votes and hype.is_clip(text):
+            self.votes[who] = now
+            self.votes = {w: t for w, t in self.votes.items() if now - t <= VOTE_WINDOW}
+            # a vote clip and a spike share one cooldown, so a moment is never clipped twice
+            if len(self.votes) >= votes and now - self.counter.last_spike >= self.cfg["cooldown"]:
+                self.counter.last_spike, self.votes = now, {}
+                self.jobs.put((now, "votes", self.counter.baseline))
 
     def stop(self):
         """Stop recording and chat. Returns before queued spikes are done; wait() is for that."""
@@ -140,14 +166,28 @@ class Session:
             hit = self.counter.roll(now)
             self.series = (self.series + [self.counter.last])[-30:]
             part.set("ok", f"{self.counter.last} msgs/{bucket}s · baseline {self.counter.baseline:.1f}")
+            while self.msgs and self.msgs[0][0] < now - self.cfg["retention"]:
+                self.msgs.popleft()
             if hit:
                 self.spikes += 1
-                self.jobs.put(now)
+                self.jobs.put((now, "spike", self.counter.baseline))
+
+    def _sidecar(self, dst, lines, spike, trigger, baseline):
+        """Write <clip>.json: hype score of the clip window, title, hashtags, review status."""
+        t0, n = spike - self.cfg["pre"], self.cfg["clip_length"]
+        win = [w for t, w in list(self.msgs) if t0 <= t <= t0 + n]
+        hype.write(dst.with_suffix(".json"), {
+            "score": hype.score(sum(win), baseline, n / self.cfg["bucket"]), "msgs": len(win),
+            "baseline": round(baseline, 1), "platform": self.platform, "login": self.login,
+            "category": self.category, "spike_at": round(spike, 1), "title": hype.title(lines),
+            "hashtags": hype.hashtags(self.platform, self.login, self.category), "status": "pending",
+            "trigger": trigger})
 
     def _clip(self):
         """Cut, caption, render each spike. On stop, still finishes queued spikes with the footage there is."""
         cfg, ff, wh = self.cfg, self.parts["ffmpeg"], self.parts["whisper"]
-        while (spike := self.jobs.get()) is not None:
+        while (job := self.jobs.get()) is not None:
+            spike, trigger, baseline = job
             # chat reacts after the moment, so most of the window is before the spike
             t0 = spike - cfg["pre"]
             self.stop_ev.wait(max(0.0, t0 + cfg["clip_length"] + cfg["segment"] - time.time()))
@@ -165,6 +205,7 @@ class Session:
                 wh.set("busy", f"captioning {dst.name}")
                 lines, words = clipper.transcribe(dst, cfg["whisper_model"])
                 clipper.write_captions(lines, dst)
+                self._sidecar(dst, lines, spike, trigger, baseline)
                 wh.set("busy", f"rendering vertical short {dst.name}")
                 shorts.render(dst, words, URLS[self.platform].format(self.login)[8:], dst.with_suffix(".short.mp4"))
                 wh.set("ok", f"captioned {dst.name}")
