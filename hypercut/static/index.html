@@ -94,6 +94,10 @@ h2{font-size:20px;margin:24px 0 12px;letter-spacing:-.01em}
 .ttl{width:100%;margin-top:8px;resize:none;background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:8px;font:14px/1.4 var(--sans)}
 .sr,.filters label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 #more{height:1px}
+.cam{margin:0 0 12px}
+.stage{position:relative;touch-action:none;cursor:crosshair;user-select:none;border-radius:12px;overflow:hidden;background:#000}
+.stage img{display:block;width:100%;pointer-events:none;-webkit-user-drag:none}
+.stage .box{position:absolute;border:2px solid var(--accent);background:rgba(255,212,59,.18);pointer-events:none}
 </style>
 </head>
 <body>
@@ -270,6 +274,43 @@ function embed(p, l) {
   const parents = ["localhost", "127.0.0.1", location.hostname].filter((v, i, a) => v && a.indexOf(v) === i).map(h => `&parent=${h}`).join("");
   return p === "twitch" ? `https://player.twitch.tv/?channel=${encodeURIComponent(l)}${parents}&muted=false` : `https://player.kick.com/${encodeURIComponent(l)}`;
 }
+function facecam(p, l) {
+  const q = `platform=${p}&login=${encodeURIComponent(l)}`, stage = $("#stage"), box = $("#camBox"), msg = $("#watchMsg");
+  let crop = null, from = null;
+  const draw = () => {
+    box.hidden = !crop; $("#camSave").disabled = !crop;
+    if (crop) Object.assign(box.style, {left: crop.x * 100 + "%", top: crop.y * 100 + "%", width: crop.w * 100 + "%", height: crop.h * 100 + "%"});
+  };
+  const at = e => { const r = stage.getBoundingClientRect(); return [Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1), Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1)]; };
+  stage.onpointerdown = e => { from = at(e); stage.setPointerCapture(e.pointerId); crop = null; draw(); };
+  stage.onpointermove = e => {
+    if (!from) return;
+    const [x, y] = at(e);
+    crop = {x: Math.min(from[0], x), y: Math.min(from[1], y), w: Math.abs(x - from[0]), h: Math.abs(y - from[1])};
+    if (crop.w < .05 || crop.h < .05) crop = null;
+    draw();
+  };
+  stage.onpointerup = stage.onpointercancel = () => { from = null; };
+  $("#camOpen").onclick = async () => {
+    msg.textContent = $("#camMsg").textContent = "";
+    const img = $("#camImg");
+    img.onerror = () => { msg.textContent = "No footage yet. Press Start clipping, wait about 20 seconds, then try again."; };
+    img.onload = async () => {  // frame is here: show it with the saved box, if any
+      try { crop = (await api(`/api/layout?${q}`)).crop; } catch { crop = null; }
+      draw(); $("#cam").hidden = false;
+    };
+    img.src = `/api/frame?${q}&t=${Date.now()}`;
+  };
+  $("#camSave").onclick = async () => {
+    try { crop = (await api("/api/layout", {platform: p, login: l, crop})).crop; msg.textContent = ""; $("#cam").hidden = true; $("#camMsg").textContent = "Facecam saved. The next short uses it."; }
+    catch (e) { msg.textContent = e.message; }
+  };
+  $("#camClear").onclick = async () => {
+    try { await api("/api/layout", {platform: p, login: l, crop: null}); crop = null; draw(); $("#camMsg").textContent = "Facecam removed."; }
+    catch (e) { msg.textContent = e.message; }
+  };
+  $("#camHide").onclick = () => { $("#cam").hidden = true; };
+}
 async function watch(p, l) {
   const w = $("#view-watch"), key = `${p}:${l}`;
   w.dataset.key = key; w.hidden = false;
@@ -279,8 +320,13 @@ async function watch(p, l) {
     <div class="watch-head"><h1>${esc(s ? s.name : l)} <span class="muted">· ${esc(p)}</span></h1>
       <button class="btn" id="fav" aria-pressed="${fav}">${fav ? "★ Favorited" : "☆ Favorite"}</button>
       <button class="btn primary" id="toggle">Start clipping</button>
+      <button class="btn" id="camOpen">Set facecam</button>
       <button class="btn" id="close" aria-label="Close player">Close</button></div>
-    <p class="err" id="watchMsg" aria-live="polite"></p>
+    <div class="cam" id="cam" hidden><p class="muted">Drag a box around the facecam. Shorts then put it on top and the game below.</p>
+      <div class="stage" id="stage"><img id="camImg" alt="Latest frame of the stream"><div class="box" id="camBox" hidden></div></div>
+      <div class="watch-head"><button class="btn primary" id="camSave" disabled>Save facecam</button>
+        <button class="btn" id="camClear">Remove facecam</button><button class="btn" id="camHide">Close</button></div></div>
+    <p class="err" id="watchMsg" aria-live="polite"></p><p class="muted" id="camMsg" aria-live="polite"></p>
     <p class="muted" style="margin:0">${esc(s ? `${s.title} — ${s.category} — ${fmt(s.viewers)} viewers` : "")}</p></div>
     <div id="watchTerm"></div></div>`;
   $("#toggle").onclick = async e => {
@@ -296,6 +342,7 @@ async function watch(p, l) {
     e.target.textContent = on ? "★ Favorited" : "☆ Favorite"; e.target.setAttribute("aria-pressed", on); applyFilters(true);
   };
   $("#close").onclick = () => { location.hash = "#/"; };
+  facecam(p, l);
   loadSessions(); scrollTo({top: 0});
 }
 
