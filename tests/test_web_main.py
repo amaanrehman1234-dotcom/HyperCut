@@ -189,6 +189,7 @@ def test_temp_files_swept_on_start_and_exit(tmp_path):
 def test_cli(tmp_path, monkeypatch):
     a, cfg = cli.parse(["--port", "1", "--bucket", "5"])
     assert a.port == 1 and a.multiplier == 2.0 and cfg["bucket"] == 5 and cfg["restart_delay"] == 30
+    assert cfg["clip_votes"] == 3 and cli.parse(["--clip-votes", "0"])[1]["clip_votes"] == 0
     opened = []
     monkeypatch.setattr(cli.webbrowser, "open", opened.append)
     app = cli.main(["--port", "0", "--out", str(tmp_path), "--open"], serve=False)
@@ -422,3 +423,32 @@ def test_cli_entry_returns_none(monkeypatch):
     called = []
     monkeypatch.setattr(m, "main", lambda: called.append(1) or "app")
     assert m.cli() is None and called == [1]  # sys.exit(None) -> status 0
+
+
+def test_clip_status(srv):
+    app, b = srv
+    d = app.out / "clips"
+    d.mkdir()
+    (d / "kick_a_b_1.mp4").write_bytes(b"v")
+    (d / "kick_a_b_2.mp4").write_bytes(b"v")
+    (d / "kick_a_b_2.json").write_text('{"score": 3.5, "status": "pending", "title": "hi"}')
+    got = {c["name"]: c for c in req(b, "/api/clips")[1]}
+    assert got["kick_a_b_1.mp4"]["status"] == "pending" and "score" not in got["kick_a_b_1.mp4"]
+    assert got["kick_a_b_2.mp4"]["score"] == 3.5 and got["kick_a_b_2.mp4"]["login"] == "a_b"
+    assert req(b, "/api/clip-status", {"name": "kick_a_b_2.mp4", "status": "approved"}) == (
+        200, {"name": "kick_a_b_2.mp4", "status": "approved"})
+    assert req(b, "/api/clip-status", {"name": "kick_a_b_1.mp4", "status": "rejected"})[0] == 200  # no sidecar yet
+    got = {c["name"]: c for c in req(b, "/api/clips")[1]}
+    assert got["kick_a_b_2.mp4"]["status"] == "approved" and got["kick_a_b_2.mp4"]["title"] == "hi"
+    assert got["kick_a_b_1.mp4"]["status"] == "rejected" and not list(d.glob("*.tmp"))
+    for body in ({"name": "kick_a_b_2.mp4", "status": "bogus"}, {"name": "kick_a_b_2.mp4", "status": ["x"]},
+                 {"name": "missing.mp4", "status": "approved"}, {"name": "../x.mp4", "status": "approved"},
+                 {"name": "kick_a_b_2.json", "status": "approved"}, {"name": 5, "status": "approved"}, [1]):
+        assert req(b, "/api/clip-status", body)[0] == 400, body
+    assert req(b, "/api/clip-status", {"name": "kick_a_b_2.mp4", "status": "pending"},
+               headers={"Origin": "http://evil.com"})[0] == 403
+    assert req(b, "/api/clip-status", {"name": "kick_a_b_2.mp4", "status": "pending"},
+               headers={"Content-Type": "text/plain"})[0] == 415
+    (d / "x.json.tmp").write_text("{}")
+    app.sweep()
+    assert not (d / "x.json.tmp").exists()

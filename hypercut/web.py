@@ -12,13 +12,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import directory, notify
+from . import directory, hype, notify
 from .session import Session
 
 STATIC = Path(__file__).parent / "static"
 CLIP_NAME = re.compile(r"[A-Za-z0-9_.-]+\.(mp4|vtt|srt)")
 MAX_SESSIONS = 10
-TEMP = (".tmp.mp4", ".short.part.mp4", ".short.ass")  # left by clipper.cut / shorts.render if killed mid-write
+STATUSES = ("pending", "approved", "rejected")
+TEMP = (".tmp.mp4", ".short.part.mp4", ".short.ass", ".json.tmp")  # left by clipper.cut / shorts.render if killed mid-write
 mimetypes.add_type("text/vtt", ".vtt")
 
 
@@ -28,7 +29,8 @@ class App:
     def __init__(self, out, cfg, dir_=None, session_cls=Session):
         self.out, self.cfg, self.session_cls = Path(out), cfg, session_cls
         self.dir = dir_ or directory.Directory()
-        self.sessions, self.lock, self.fav_lock = {}, threading.Lock(), threading.Lock()
+        self.sessions, self.lock = {}, threading.Lock()
+        self.fav_lock, self.clip_lock = threading.Lock(), threading.Lock()
         self.fav_path = self.out / "favorites.json"
         self.following = {"category": "", "channels": []}  # served by /api/following before --follow runs
         self.sweep()  # leftovers from a run that was killed
@@ -56,6 +58,18 @@ class App:
             tmp.write_text(json.dumps(favs))
             os.replace(tmp, self.fav_path)
             return favs
+
+    def set_status(self, name, status):
+        """Review a clip: pending, approved or rejected. Updates its sidecar atomically; returns the new status."""
+        if (not isinstance(name, str) or not CLIP_NAME.fullmatch(name) or not name.endswith(".mp4")
+                or not (self.out / "clips" / name).is_file()):
+            raise ValueError("no such clip")
+        if status not in STATUSES:
+            raise ValueError("bad status")
+        path = (self.out / "clips" / name).with_suffix(".json")
+        with self.clip_lock:
+            hype.write(path, {**hype.read(path), "status": status})
+        return {"name": name, "status": status}
 
     def start(self, platform, login):
         """Start clipping a channel (no-op if it already is); returns its status."""
@@ -108,7 +122,8 @@ class App:
         """Finished clips, newest first. Shorts and half-written temp files are never listed."""
         skip = (".tmp.mp4", ".part.mp4", ".short.mp4")
         files = [(p, p.stat().st_mtime) for p in (self.out / "clips").glob("*.mp4") if not p.name.endswith(skip)]
-        return [{"name": p.name, "captions": p.with_suffix(".vtt").exists(),
+        return [{"status": "pending", **hype.read(p.with_suffix(".json")),
+                 "name": p.name, "captions": p.with_suffix(".vtt").exists(),
                  "short": p.with_suffix(".short.mp4").exists(), "platform": p.name.split("_")[0],
                  "login": "_".join(p.stem.split("_")[1:-1]), "at": at}
                 for p, at in sorted(files, key=lambda f: f[1], reverse=True)]
@@ -206,7 +221,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(502, {"error": str(e)})
 
     def do_POST(self):
-        """/api/start, /api/stop, /api/favorite: small JSON bodies from our own origin only."""
+        """/api/start, /api/stop, /api/favorite, /api/clip-status: small JSON bodies from our own origin only."""
         if not self.host_ok():
             return
         if self.headers.get_content_type() != "application/json":
@@ -219,6 +234,8 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 <= n <= 4096:
                 return self.send(413, {"error": "body too large"})
             body = json.loads(self.rfile.read(n) or b"{}")
+            if self.path == "/api/clip-status":
+                return self.send(200, self.app.set_status(body.get("name"), body.get("status")))
             platform, login = channel(body)
             if self.path == "/api/start":
                 return self.send(200, self.app.start(platform, login))
