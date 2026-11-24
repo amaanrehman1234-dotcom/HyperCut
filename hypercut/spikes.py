@@ -30,7 +30,12 @@ class SpikeCounter:
         h.append(n)
         self.last = n
         big = n >= max(self.min_msgs, self.multiplier * self.baseline)
-        hit = warm and big and now - self.last_spike >= self.cooldown
-        if hit:
+        return warm and big and self.claim(now, self.cooldown)
+
+    def claim(self, now, cooldown):
+        """Atomically take the clip slot: True (and last_spike = now) if cooldown has passed. Spikes and votes share it."""
+        with self.lock:
+            if now - self.last_spike < cooldown:
+                return False
             self.last_spike = now
-        return hit
+            return True

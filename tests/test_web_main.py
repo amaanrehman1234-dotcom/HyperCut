@@ -3,6 +3,7 @@ import json
 import os
 import runpy
 import signal
+import subprocess
 import threading
 import urllib.error
 import urllib.request
@@ -111,6 +112,45 @@ def test_routes(srv, tmp_path, monkeypatch):
     assert req(b, "/api/start", raw=b"[]")[0] == 400  # AttributeError
     assert req(b, "/api/start", raw=b"")[0] == 400  # empty -> {} -> bad channel
     assert req(b, "/clips/x.mp4\n")[0] == 404  # fullmatch: no trailing-newline slip
+
+
+def test_security_headers(srv):
+    _, b = srv
+    for path in ("/", "/api/live", "/nope"):
+        try:
+            r = urllib.request.urlopen(b + path)
+        except urllib.error.HTTPError as e:
+            r = e
+        assert r.headers["X-Content-Type-Options"] == "nosniff" and r.headers["Referrer-Policy"] == "no-referrer"
+        assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+
+
+def test_layout_and_frame(srv, tmp_path):
+    app, b = srv
+    ch = {"platform": "twitch", "login": "Foo"}
+    assert req(b, "/api/layout?platform=twitch&login=foo") == (200, {"crop": None})
+    assert req(b, "/api/layout", {**ch, "crop": {"x": 0.9, "y": 0, "w": 0.3, "h": 0.2}}) == (
+        200, {"crop": {"x": 0.7, "y": 0.0, "w": 0.3, "h": 0.2}})
+    assert req(b, "/api/layout?platform=twitch&login=foo")[1]["crop"]["x"] == 0.7
+    assert req(b, "/api/layout", {**ch, "crop": {"x": "a"}})[0] == 400
+    assert req(b, "/api/layout", ch)[0] == 400  # crop missing
+    assert req(b, "/api/layout", {"platform": "x", "login": "foo", "crop": None})[0] == 400
+    assert req(b, "/api/layout", {**ch, "crop": None}) == (200, {"crop": None})
+    assert (tmp_path / "layouts.json").read_text() == "{}"
+    (tmp_path / "layouts.json").write_text("{corrupt")
+    assert req(b, "/api/layout?platform=twitch&login=foo") == (200, {"crop": None})
+    assert req(b, "/api/layout", {**ch, "crop": None}, headers={"Origin": "http://evil.com"})[0] == 403
+
+    assert req(b, "/api/frame?platform=twitch&login=foo")[0] == 404  # no footage
+    assert req(b, "/api/frame?platform=nope&login=foo")[0] == 400
+    seg = tmp_path / "recordings" / "twitch_foo"
+    seg.mkdir(parents=True)
+    (seg / "1.ts").write_bytes(b"junk")
+    assert req(b, "/api/frame?platform=twitch&login=foo")[0] == 404  # undecodable
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
+                    "-c:v", "mpeg2video", str(seg / "2.ts")], check=True)
+    code, jpg = req(b, "/api/frame?platform=twitch&login=foo")
+    assert code == 200 and jpg[:2] == b"\xff\xd8"
 
 
 def test_guards(srv):

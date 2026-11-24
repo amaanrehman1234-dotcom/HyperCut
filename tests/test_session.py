@@ -134,7 +134,7 @@ def stub_pipeline(monkeypatch):
     cuts, caps, shorts_ = [], [], []
     monkeypatch.setattr(clipper, "cut", lambda src, st, ln, dst: cuts.append((src, st, ln, dst.name)))
     monkeypatch.setattr(clipper, "transcribe", lambda p, m: ([(0, 1, "a")], [(0, 1, "a")]))
-    monkeypatch.setattr(session.shorts, "render", lambda *a: shorts_.append(a))
+    monkeypatch.setattr(session.shorts, "render", lambda *a, **k: shorts_.append((*a, k)))
     monkeypatch.setattr(clipper, "write_captions", lambda segs, dst: caps.append(segs))
     return cuts, caps, shorts_
 
@@ -169,7 +169,8 @@ def test_clip_stubbed(tmp_path, monkeypatch):
     assert src == f"concat:{s.seg_dir}/{names[0]}.ts|{s.seg_dir}/{names[1]}.ts" and length == 20
     assert abs(off - (t0 - names[0])) < 1e-6 and name.startswith("twitch_foo_") and name.endswith(".mp4")
     assert s.clips == 1 and caps == [[(0, 1, "a")]] and hooked and hooked[0].name == name
-    words, credit, out = shorts_[0][1:]
+    words, credit, out, kw = shorts_[0][1:]
+    assert kw == {"crop": None}
     assert words == [(0, 1, "a")] and credit == "twitch.tv/foo" and out.name.endswith(".short.mp4")
     assert s.parts["whisper"].detail.startswith("captioned twitch_foo_") and s.parts["ffmpeg"].detail == "1 clips"
 
@@ -223,7 +224,7 @@ def test_clip_real_concat_cut(tmp_path, monkeypatch):
     make_ts(s.seg_dir / f"{base}.ts", 6)
     make_ts(s.seg_dir / f"{base + 6}.ts", 6)
     monkeypatch.setattr(clipper, "transcribe", lambda p, m: ([], []))
-    monkeypatch.setattr(session.shorts, "render", lambda *a: None)
+    monkeypatch.setattr(session.shorts, "render", lambda *a, **k: None)
     hooked = []
     s.on_clip = hooked.append
     s.jobs.put((base + 8, "spike", 2.0))  # t0 = base+5: 1s of seg 1 + 3s of seg 2 (input-side -ss would truncate to 1s)
@@ -315,3 +316,26 @@ def test_clip_sidecar(tmp_path, monkeypatch):
         "score": 1.0, "msgs": 2, "baseline": 1.5, "platform": "twitch", "login": "Foo", "category": "Just Chatting",
         "spike_at": round(now, 1), "title": "no way!", "status": "pending", "trigger": "votes",
         "hashtags": ["#foo", "#justchatting", "#twitch", "#clips", "#shorts"]}
+
+
+def test_clip_reads_layout_at_render_time(tmp_path, monkeypatch):
+    s = Session("twitch", "foo", tmp_path, {**CFG, "segment": 10})
+    *_, shorts_ = stub_pipeline(monkeypatch)
+    now = time.time() - 100
+    s.seg_dir.mkdir(parents=True)
+    (s.seg_dir / f"{int(now) - 3}.ts").write_bytes(b"x")
+    crop = {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4}
+    hype.write(s.layouts, {"twitch:foo": crop, "kick:foo": {}})
+    s.jobs.put((now, "spike", 2.0))
+    s.jobs.put(None)
+    s._clip()
+    assert shorts_[0][-1] == {"crop": crop}
+
+
+def test_claim_is_atomic(tmp_path):
+    s = Session("twitch", "foo", tmp_path, {**CFG, "cooldown": 60})
+    wins = []
+    ts = [threading.Thread(target=lambda: wins.append(s.counter.claim(time.time(), 60))) for _ in range(20)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert wins.count(True) == 1

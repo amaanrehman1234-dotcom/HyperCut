@@ -49,6 +49,7 @@ class Session:
         self.counter = SpikeCounter(cfg["multiplier"], cfg["min_msgs"], cfg["cooldown"])
         self.stop_ev = threading.Event()
         self.jobs = queue.Queue()
+        self.layouts = out / "layouts.json"
         self.seg_dir = self.rec_dir / f"{platform}_{login}"
         self.proc = None
         self.on_clip = None  # hook for uploaders: called with each finished clip path
@@ -93,8 +94,8 @@ class Session:
             self.votes[who] = now
             self.votes = {w: t for w, t in self.votes.items() if now - t <= VOTE_WINDOW}
             # a vote clip and a spike share one cooldown, so a moment is never clipped twice
-            if len(self.votes) >= votes and now - self.counter.last_spike >= self.cfg["cooldown"]:
-                self.counter.last_spike, self.votes = now, {}
+            if len(self.votes) >= votes and self.counter.claim(now, self.cfg["cooldown"]):
+                self.votes = {}
                 self.jobs.put((now, "votes", self.counter.baseline))
 
     def stop(self):
@@ -207,7 +208,8 @@ class Session:
                 clipper.write_captions(lines, dst)
                 self._sidecar(dst, lines, spike, trigger, baseline)
                 wh.set("busy", f"rendering vertical short {dst.name}")
-                shorts.render(dst, words, URLS[self.platform].format(self.login)[8:], dst.with_suffix(".short.mp4"))
+                shorts.render(dst, words, URLS[self.platform].format(self.login)[8:], dst.with_suffix(".short.mp4"),
+                              crop=hype.read(self.layouts).get(self.key))  # read now: edits apply to the next short
                 wh.set("ok", f"captioned {dst.name}")
                 if self.on_clip:
                     self.on_clip(dst)
