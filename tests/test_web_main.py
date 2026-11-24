@@ -436,7 +436,7 @@ def test_cli_version_help_and_missing_tools(tmp_path, monkeypatch, capsys):
     import hypercut
     with pytest.raises(SystemExit) as e:
         cli.parse(["--version"])
-    assert e.value.code == 0 and capsys.readouterr().out == f"hypercut {hypercut.__version__}\n" == "hypercut 0.1.0\n"
+    assert e.value.code == 0 and capsys.readouterr().out == f"hypercut {hypercut.__version__}\n" == "hypercut 0.2.0\n"
     with pytest.raises(SystemExit):
         cli.parse(["--help"])
     out = capsys.readouterr().out
