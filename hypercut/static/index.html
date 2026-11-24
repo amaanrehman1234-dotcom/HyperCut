@@ -252,14 +252,16 @@ function renderClips() {
 }
 async function loadClips() {
   const c = await api("/api/clips");
-  if (playing()) return;  // don't yank a playing clip
+  const clips = $("#clips");
+  if (playing() || clips.matches(":hover") || clips.contains(document.activeElement)) return;  // don't yank a playing clip or reorder cards under the user
   clipData = c; renderClips();
 }
 async function review(card, status) {
   const x = clipData.find(c => c.name === card.dataset.clip), next = x.status === status ? "pending" : status;
   $("#clipMsg").textContent = "";
   try { await api("/api/clip-status", {name: x.name, status: next}); } catch (e) { $("#clipMsg").textContent = e.message; return; }
-  x.status = next;
+  const cur = clipData.find(c => c.name === x.name);  // a poll may have replaced clipData while we awaited
+  if (cur) cur.status = next;
   card.querySelectorAll("[data-review]").forEach(b => b.setAttribute("aria-pressed", b.dataset.review === next));
   if (!playing()) renderClips();  // re-filter; skipped while a clip plays so it isn't interrupted
 }

@@ -492,3 +492,12 @@ def test_clip_status(srv):
     (d / "x.json.tmp").write_text("{}")
     app.sweep()
     assert not (d / "x.json.tmp").exists()
+
+
+def test_layout_and_start_ignore_login_case(srv):
+    app, _ = srv
+    app.set_layout("twitch", "Foo", {"x": 0.1, "y": 0.1, "w": 0.2, "h": 0.2})
+    assert app.layout("twitch", "foo") == app.layout("twitch", "FOO") and app.layout("twitch", "foo")
+    app.start("twitch", "Foo")
+    assert list(app.sessions) == ["twitch:foo"] and app.start("twitch", "FOO")
+    assert app.stop("twitch", "Foo") == {"stopped": True}

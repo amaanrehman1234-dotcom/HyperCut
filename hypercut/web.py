@@ -40,7 +40,7 @@ class App:
         self.out, self.cfg, self.session_cls = Path(out), cfg, session_cls
         self.dir = dir_ or directory.Directory()
         self.sessions, self.lock = {}, threading.Lock()
-        self.fav_lock, self.clip_lock = threading.Lock(), threading.Lock()
+        self.fav_lock = threading.Lock()
         self.fav_path, self.layout_path = self.out / "favorites.json", self.out / "layouts.json"
         self.layout_lock = threading.Lock()
         self.following = {"category": "", "channels": []}  # served by /api/following before --follow runs
@@ -78,17 +78,17 @@ class App:
         if status not in STATUSES:
             raise ValueError("bad status")
         path = (self.out / "clips" / name).with_suffix(".json")
-        with self.clip_lock:
+        with hype.lock:
             hype.write(path, {**hype.read(path), "status": status})
         return {"name": name, "status": status}
 
     def layout(self, platform, login):
         """Facecam crop {x, y, w, h} of a channel, or None."""
-        return hype.read(self.layout_path).get(f"{platform}:{login}")
+        return hype.read(self.layout_path).get(f"{platform}:{login.lower()}")
 
     def set_layout(self, platform, login, crop):
         """Save a channel's facecam crop (validated, clamped) or clear it with None; returns {"crop": ...}."""
-        key = f"{platform}:{login}"
+        key = f"{platform}:{login.lower()}"
         with self.layout_lock:
             layouts = hype.read(self.layout_path)
             if crop is None:
@@ -110,6 +110,7 @@ class App:
 
     def start(self, platform, login):
         """Start clipping a channel (no-op if it already is); returns its status."""
+        login = login.lower()
         with self.lock:
             key = f"{platform}:{login}"
             if key not in self.sessions:
@@ -123,7 +124,7 @@ class App:
     def stop(self, platform, login):
         """Stop clipping a channel. Clips already queued still finish in the background."""
         with self.lock:
-            s = self.sessions.pop(f"{platform}:{login}", None)
+            s = self.sessions.pop(f"{platform}:{login.lower()}", None)
         if s:
             s.stop()
         return {"stopped": bool(s)}

@@ -265,3 +265,20 @@ def test_hype_title_hashtags_sidecar(tmp_path):
     assert hype.read(p) == {"a": 1} and not (tmp_path / "a.json.tmp").exists()
     p.write_text("[1]")
     assert hype.read(p) == {}
+
+
+def test_kick_emotes_become_names(monkeypatch):
+    stop, got = threading.Event(), []
+    msg = {"id": 1, "content": "[emote:123:KEKW] [emote:4:W]", "sender": {"id": 1}}
+    polls = iter([{"data": {"messages": []}}, {"data": {"messages": [msg]}}])
+
+    def fake(url):
+        if url.endswith("/s"):
+            return {"id": 42}
+        if got:
+            stop.set()
+        return next(polls, {"data": {"messages": []}})
+
+    monkeypatch.setattr(chat, "get_json", fake)
+    chat.kick_chat("s", lambda who, text: got.append(text), stop, interval=0)
+    assert got == ["KEKW W"] and hype.weight(got[0]) == 2

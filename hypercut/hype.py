@@ -2,12 +2,14 @@
 import json
 import os
 import re
+import threading
 
 EMOTES = {"KEKW", "LUL", "LULW", "OMEGALUL", "POG", "POGGERS", "PogChamp", "Pog", "W", "monkaS", "EZ", "Clap"}
 EMOJI = "😂💀🔥"
 WORDS = ("insane", "crazy", "no way", "let's go", "oh my god", "omg", "wow")
 CLIP = re.compile(r"!?clip( it)?")
 TITLE_MAX = 60
+lock = threading.Lock()  # guards sidecar read-modify-write (review status vs. whisper finishing)
 
 
 def is_clip(text):

@@ -41,6 +41,7 @@ class Session:
     """One channel being watched: record + read chat + count + cut + caption."""
 
     def __init__(self, platform, login, out, cfg, streamlink="streamlink"):
+        login = login.lower()
         self.platform, self.login, self.cfg, self.streamlink = platform, login, cfg, streamlink
         self.rec_dir, self.clip_dir = out / "recordings", out / "clips"
         self.rec_dir.mkdir(parents=True, exist_ok=True)
@@ -177,12 +178,14 @@ class Session:
         """Write <clip>.json: hype score of the clip window, title, hashtags, review status."""
         t0, n = spike - self.cfg["pre"], self.cfg["clip_length"]
         win = [w for t, w in list(self.msgs) if t0 <= t <= t0 + n]
-        hype.write(dst.with_suffix(".json"), {
-            "score": hype.score(sum(win), baseline, n / self.cfg["bucket"]), "msgs": len(win),
-            "baseline": round(baseline, 1), "platform": self.platform, "login": self.login,
-            "category": self.category, "spike_at": round(spike, 1), "title": hype.title(lines),
-            "hashtags": hype.hashtags(self.platform, self.login, self.category), "status": "pending",
-            "trigger": trigger})
+        path = dst.with_suffix(".json")
+        with hype.lock:  # a review status set while whisper ran wins over "pending"
+            hype.write(path, {
+                "score": hype.score(sum(win), baseline, n / self.cfg["bucket"]), "msgs": len(win),
+                "baseline": round(baseline, 1), "platform": self.platform, "login": self.login,
+                "category": self.category, "spike_at": round(spike, 1), "title": hype.title(lines),
+                "hashtags": hype.hashtags(self.platform, self.login, self.category), "status": "pending",
+                "trigger": trigger, **hype.read(path)})
 
     def _clip(self):
         """Cut, caption, render each spike. On stop, still finishes queued spikes with the footage there is."""

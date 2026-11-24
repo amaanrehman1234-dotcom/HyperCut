@@ -42,7 +42,7 @@ def wait_for(cond, t=10):
 
 def test_part_key_status(tmp_path):
     s = Session("kick", "Foo", tmp_path, CFG)
-    assert s.key == "kick:Foo" and (tmp_path / "clips").is_dir()
+    assert s.key == "kick:foo" and (tmp_path / "clips").is_dir()
     s.parts["chat"].set("ok", "x")
     st = s.status()
     assert st["running"] == 1 and st["parts"]["chat"] == {"state": "ok", "detail": "x"} and st["baseline"] == 0
@@ -313,7 +313,7 @@ def test_clip_sidecar(tmp_path, monkeypatch):
     s._clip()
     (side,) = (tmp_path / "clips").glob("*.json")
     assert hype.read(side) == {
-        "score": 1.0, "msgs": 2, "baseline": 1.5, "platform": "twitch", "login": "Foo", "category": "Just Chatting",
+        "score": 1.0, "msgs": 2, "baseline": 1.5, "platform": "twitch", "login": "foo", "category": "Just Chatting",
         "spike_at": round(now, 1), "title": "no way!", "status": "pending", "trigger": "votes",
         "hashtags": ["#foo", "#justchatting", "#twitch", "#clips", "#shorts"]}
 
@@ -339,3 +339,13 @@ def test_claim_is_atomic(tmp_path):
     [t.start() for t in ts]
     [t.join() for t in ts]
     assert wins.count(True) == 1
+
+
+def test_sidecar_keeps_status_set_while_whisper_ran(tmp_path):
+    s = Session("twitch", "foo", tmp_path, CFG)
+    dst = tmp_path / "clips" / "twitch_foo_1.mp4"
+    hype.write(dst.with_suffix(".json"), {"status": "approved"})  # user approved mid-whisper
+    s._sidecar(dst, [(0, 1, "hi")], time.time(), "spike", 1.0)
+    d = hype.read(dst.with_suffix(".json"))
+    assert d["status"] == "approved" and d["title"] == "hi"
+

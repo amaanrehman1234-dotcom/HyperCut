@@ -1,5 +1,6 @@
 """Anonymous chat readers for Twitch (IRC over WebSocket) and Kick (polling)."""
 import random
+import re
 from collections import deque
 
 from websockets.sync.client import connect
@@ -7,6 +8,7 @@ from websockets.sync.client import connect
 from .directory import KICK
 from .net import get_json
 
+KICK_EMOTE = re.compile(r"\[emote:\d+:([^\]]+)\]")
 TWITCH_IRC = "wss://irc-ws.chat.twitch.tv:443"
 
 
@@ -50,7 +52,7 @@ def kick_chat(slug, on_msg, stop, interval=1.0):
         seen.extend(m["id"] for m in new)
         if not first:
             for m in new:
-                on_msg(m["sender"]["id"], m["content"])
+                on_msg(m["sender"]["id"], KICK_EMOTE.sub(r"\1", m["content"]))
         first = False
         stop.wait(interval)
 
