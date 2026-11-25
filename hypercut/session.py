@@ -183,7 +183,7 @@ class Session:
             hype.write(path, {
                 "score": hype.score(sum(win), baseline, n / self.cfg["bucket"]), "msgs": len(win),
                 "baseline": round(baseline, 1), "platform": self.platform, "login": self.login,
-                "category": self.category, "spike_at": round(spike, 1), "title": hype.title(lines),
+                "category": self.category, "spike_at": round(spike, 1), "title": hype.title(lines, f"{self.login} · {self.category}" if self.category else self.login),
                 "hashtags": hype.hashtags(self.platform, self.login, self.category), "status": "pending",
                 "trigger": trigger, **hype.read(path)})
 

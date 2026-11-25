@@ -33,15 +33,17 @@ def score(msgs, baseline, buckets):
     return round(msgs / (max(baseline, 1) * max(buckets, 1)), 2)
 
 
-def title(lines):
-    """Title from transcript [(start, end, text)]: first short punchy line (! ? CAPS hype word), else first line."""
+def title(lines, fallback=""):
+    """Title from transcript [(start, end, text)]: first short punchy line (! ? CAPS hype word), else first line.
+
+    No speech at all (muted mic, music) -> fallback, so a clip never ships with a blank title."""
     texts = [t.strip() for _, _, t in lines if t.strip()]
 
     def punchy(t):
         return len(t) <= TITLE_MAX and ("!" in t or "?" in t or any(w.isupper() and len(w) > 1 for w in t.split())
                                         or any(w in t.lower() for w in WORDS))
 
-    pick = next((t for t in texts if punchy(t)), texts[0] if texts else "")
+    pick = next((t for t in texts if punchy(t)), texts[0] if texts else fallback)
     return pick if len(pick) <= TITLE_MAX else pick[:TITLE_MAX - 1].rstrip() + "…"
 
 

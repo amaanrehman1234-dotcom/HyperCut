@@ -251,6 +251,8 @@ def test_hype_score():
 
 def test_hype_title_hashtags_sidecar(tmp_path):
     assert hype.title([]) == ""
+    assert hype.title([], "ohnepixel · Just Chatting") == "ohnepixel · Just Chatting"  # silent clip
+    assert hype.title([(0, 1, "  ")], "ohnepixel") == "ohnepixel"
     assert hype.title([(0, 1, " so anyway "), (1, 2, " no way! ")]) == "no way!"
     assert hype.title([(0, 1, "so anyway"), (1, 2, "  "), (2, 3, "then")]) == "so anyway"
     assert hype.title([(0, 1, "x" * 99 + "!"), (1, 2, "we GOT it")]) == "we GOT it"
