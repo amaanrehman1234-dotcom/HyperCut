@@ -207,7 +207,7 @@ class Session:
                 self.clips += 1
                 ff.set("ok", f"{self.clips} clips")
                 wh.set("busy", f"captioning {dst.name}")
-                lines, words = clipper.transcribe(dst, cfg["whisper_model"])
+                lines, words = clipper.transcribe(dst, cfg["whisper_model"], cfg.get("translate", False))
                 clipper.write_captions(lines, dst)
                 self._sidecar(dst, lines, spike, trigger, baseline)
                 wh.set("busy", f"rendering vertical short {dst.name}")

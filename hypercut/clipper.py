@@ -38,13 +38,14 @@ def write_captions(segments, base):
     base.with_suffix(".vtt").write_text(vtt, encoding="utf-8")
 
 
-def transcribe(path, model_name):
-    """Caption a clip: returns ([(start, end, text)] segments, [(start, end, word)] words)."""
+def transcribe(path, model_name, translate=False):
+    """Caption a clip (translate=True: any language -> English): returns ([(start, end, text)] segments, [(start, end, word)] words)."""
     from faster_whisper import WhisperModel  # heavy import, only when first clip is captioned
 
     with _lock:
         if model_name not in _models:
             _models[model_name] = WhisperModel(model_name, compute_type="int8")
         # VAD: no hallucinated text over music/silence; word timestamps drive the word-by-word short captions
-        segs = list(_models[model_name].transcribe(str(path), vad_filter=True, word_timestamps=True)[0])
+        segs = list(_models[model_name].transcribe(str(path), vad_filter=True, word_timestamps=True,
+                                                         task="translate" if translate else "transcribe")[0])
         return [(s.start, s.end, s.text) for s in segs], [(w.start, w.end, w.word) for s in segs for w in s.words]

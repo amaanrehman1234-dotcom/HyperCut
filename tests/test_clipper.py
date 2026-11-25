@@ -17,7 +17,7 @@ def test_write_captions(tmp_path):
 
 
 def test_transcribe_caches_model(monkeypatch):
-    made = []
+    made, tasks = [], []
 
     class FakeModel:
         def __init__(self, name, compute_type):
@@ -25,6 +25,7 @@ def test_transcribe_caches_model(monkeypatch):
 
         def transcribe(self, path, **kw):
             assert kw["word_timestamps"]
+            tasks.append(kw["task"])
             w = types.SimpleNamespace(start=0, end=0.5, word=" a")
             return iter([types.SimpleNamespace(start=0, end=1, text="a", words=[w])]), None
 
@@ -32,7 +33,9 @@ def test_transcribe_caches_model(monkeypatch):
     monkeypatch.setattr(clipper, "_models", {})
     assert clipper.transcribe(Path("x.mp4"), "m") == ([(0, 1, "a")], [(0, 0.5, " a")])
     clipper.transcribe("x.mp4", "m")
+    clipper.transcribe("x.mp4", "m", translate=True)
     assert made == [("m", "int8")]
+    assert tasks == ["transcribe", "transcribe", "translate"]
 
 
 def test_cut_real(tmp_path):

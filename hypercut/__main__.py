@@ -15,7 +15,7 @@ from .web import App, lan_ip, make_server
 TOOLS = {"ffmpeg": "install it from https://ffmpeg.org/download.html or your package manager",
          "streamlink": "install it with: pip install streamlink"}
 CFG_KEYS = ("bucket", "clip_length", "pre", "multiplier", "min_msgs", "cooldown", "quality", "whisper_model",
-            "discord_webhook", "clip_votes")
+            "discord_webhook", "clip_votes", "translate")
 SHUTDOWN_WAIT = 60  # seconds clip workers get to finish on exit
 
 
@@ -50,6 +50,7 @@ def parse(argv=None):
     g.add_argument("--quality", metavar="NAME", default="best", help="streamlink quality (default: %(default)s)")
     g.add_argument("--whisper-model", metavar="NAME", default="base",
                    help="caption model: tiny is fastest, small and up caption better (default: %(default)s)")
+    g.add_argument("--translate", action="store_true", help="captions and titles in English, whatever language is spoken")
 
     g = p.add_argument_group("24/7")
     g.add_argument("--follow", metavar="CATEGORY",

@@ -96,6 +96,7 @@ Every finished short gets posted to your Discord channel with the video attached
 --clip-votes 3       clip when this many chatters say !clip within 15 s, 0 = off
 --clip-length 30     --pre 20   (seconds kept before the spike; chat reacts late)
 --whisper-model base tiny is fastest, small and up caption better
+--translate          English captions and titles, whatever language is spoken
 --quality best       streamlink quality
 --out DIR            where clips/ and recordings/ go
 --port 8787          --host 127.0.0.1

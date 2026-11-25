@@ -133,7 +133,7 @@ def test_count_spike(tmp_path):
 def stub_pipeline(monkeypatch):
     cuts, caps, shorts_ = [], [], []
     monkeypatch.setattr(clipper, "cut", lambda src, st, ln, dst: cuts.append((src, st, ln, dst.name)))
-    monkeypatch.setattr(clipper, "transcribe", lambda p, m: ([(0, 1, "a")], [(0, 1, "a")]))
+    monkeypatch.setattr(clipper, "transcribe", lambda p, m, t=False: ([(0, 1, "a")], [(0, 1, "a")]))
     monkeypatch.setattr(session.shorts, "render", lambda *a, **k: shorts_.append((*a, k)))
     monkeypatch.setattr(clipper, "write_captions", lambda segs, dst: caps.append(segs))
     return cuts, caps, shorts_
@@ -223,7 +223,7 @@ def test_clip_real_concat_cut(tmp_path, monkeypatch):
     s.seg_dir.mkdir(parents=True)
     make_ts(s.seg_dir / f"{base}.ts", 6)
     make_ts(s.seg_dir / f"{base + 6}.ts", 6)
-    monkeypatch.setattr(clipper, "transcribe", lambda p, m: ([], []))
+    monkeypatch.setattr(clipper, "transcribe", lambda p, m, t=False: ([], []))
     monkeypatch.setattr(session.shorts, "render", lambda *a, **k: None)
     hooked = []
     s.on_clip = hooked.append
@@ -303,7 +303,7 @@ def test_clip_sidecar(tmp_path, monkeypatch):
     s = Session("twitch", "Foo", tmp_path, cfg)
     s.category = "Just Chatting"
     stub_pipeline(monkeypatch)
-    monkeypatch.setattr(clipper, "transcribe", lambda p, m: ([(0, 1, "no way!")], []))
+    monkeypatch.setattr(clipper, "transcribe", lambda p, m, t=False: ([(0, 1, "no way!")], []))
     now = time.time() - 100
     s.seg_dir.mkdir(parents=True)
     (s.seg_dir / f"{int(now) - 10}.ts").write_bytes(b"x")
