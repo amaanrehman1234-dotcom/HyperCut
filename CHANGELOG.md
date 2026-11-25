@@ -3,6 +3,7 @@
 ## 0.2.0
 
 - Every clip gets a hype score (chat activity in the clip window against the channel's usual pace, hype emotes and ALL CAPS count double) and a `<clip>.json` sidecar with title, hashtags and review status.
+- Viral-only mode: reaction words (LMAO, WTF, NO WAY...) and more emoji count as hype, each chatter counts at most 3 so spam can't fake a moment, loud audio boosts the score up to 1.5x, and `--min-score X` / `--top-per-hour N` drop weak clips before whisper runs. Sidecar gains `chatters` and `loudness`.
 - Chat can trigger clips: `--clip-votes N` (default 3) clips when N different chatters say `!clip` within 15 seconds. 0 turns it off. Votes and spikes share one cooldown.
 - Clips tab: sort by hype score, filter by status, Approve / Reject, and copy a suggested title with hashtags.
 - Facecam layout: press **Set facecam** on the watch view, drag a box on the latest frame, and shorts for that channel put the facecam on top and the gameplay below. New routes `GET /api/frame`, `GET`/`POST /api/layout`; the crop lives in `layouts.json`.

@@ -3,13 +3,14 @@ import subprocess
 import threading
 import time
 import types
+from datetime import datetime
 
 
 from hypercut import chat, clipper, directory, hype, session
 from hypercut.session import Session
 
 CFG = dict(bucket=0.05, clip_length=0, pre=0, multiplier=2, min_msgs=3, cooldown=0, quality="best",
-           whisper_model="tiny", restart_delay=0.01, segment=1, retention=1, clip_votes=3)
+           whisper_model="tiny", restart_delay=0.01, segment=1, retention=1, clip_votes=3, min_score=0, top_per_hour=0)
 
 # a fake streamlink: ignores its args and writes live-ish MPEG-TS to stdout (5 fps-paced keyframes every 5 frames)
 FFMPEG_TS = ("ffmpeg -loglevel error -re -f lavfi -i testsrc=size=64x64:rate=10 -t {t} "
@@ -117,7 +118,7 @@ def test_start_stop_both_platforms(tmp_path, monkeypatch):
 
 def test_count_spike(tmp_path):
     s = Session("twitch", "foo", tmp_path, CFG)
-    s.msgs.append((time.time() - 100, 1))  # older than retention: pruned
+    s.msgs.append((time.time() - 100, 1, "a"))  # older than retention: pruned
     t = threading.Thread(target=s._count)
     t.start()
     for _ in range(5):
@@ -133,6 +134,7 @@ def test_count_spike(tmp_path):
 def stub_pipeline(monkeypatch):
     cuts, caps, shorts_ = [], [], []
     monkeypatch.setattr(clipper, "cut", lambda src, st, ln, dst: cuts.append((src, st, ln, dst.name)))
+    monkeypatch.setattr(clipper, "loudness", lambda p: 0.0)
     monkeypatch.setattr(clipper, "transcribe", lambda p, m, t=False: ([(0, 1, "a")], [(0, 1, "a")]))
     monkeypatch.setattr(session.shorts, "render", lambda *a, **k: shorts_.append((*a, k)))
     monkeypatch.setattr(clipper, "write_captions", lambda segs, dst: caps.append(segs))
@@ -275,7 +277,7 @@ def test_on_msg_votes_and_cooldown(tmp_path):
     s.on_msg("a", "KEKW")
     for who in ("a", "a", "b"):  # a repeat voter counts once
         s.on_msg(who, "!clip")
-    assert s.jobs.empty() and s.counter.count == 4 and s.msgs[0][1] == 2
+    assert s.jobs.empty() and s.counter.count == 4 and s.msgs[0][1:] == (2, "a")
     s.votes["old"] = time.time() - 100  # a stale vote has expired
     s.on_msg("c", "clip it")
     at, trigger, base = s.jobs.get_nowait()
@@ -307,13 +309,13 @@ def test_clip_sidecar(tmp_path, monkeypatch):
     now = time.time() - 100
     s.seg_dir.mkdir(parents=True)
     (s.seg_dir / f"{int(now) - 10}.ts").write_bytes(b"x")
-    s.msgs.extend([(now - 5, 2), (now + 10, 1), (now - 50, 1), (now + 40, 1)])  # last two outside the window
+    s.msgs.extend([(now - 5, 2, "a"), (now + 10, 1, "b"), (now - 50, 1, "c"), (now + 40, 1, "d")])  # last two outside the window
     s.jobs.put((now, "votes", 1.5))
     s.jobs.put(None)
     s._clip()
     (side,) = (tmp_path / "clips").glob("*.json")
     assert hype.read(side) == {
-        "score": 1.0, "msgs": 2, "baseline": 1.5, "platform": "twitch", "login": "foo", "category": "Just Chatting",
+        "score": 1.0, "msgs": 2, "chatters": 2, "loudness": 0.0, "baseline": 1.5, "platform": "twitch", "login": "foo", "category": "Just Chatting",
         "spike_at": round(now, 1), "title": "no way!", "status": "pending", "trigger": "votes",
         "hashtags": ["#foo", "#justchatting", "#twitch", "#clips", "#shorts"]}
 
@@ -345,7 +347,51 @@ def test_sidecar_keeps_status_set_while_whisper_ran(tmp_path):
     s = Session("twitch", "foo", tmp_path, CFG)
     dst = tmp_path / "clips" / "twitch_foo_1.mp4"
     hype.write(dst.with_suffix(".json"), {"status": "approved"})  # user approved mid-whisper
-    s._sidecar(dst, [(0, 1, "hi")], time.time(), "spike", 1.0)
+    s._sidecar(dst, [(0, 1, "hi")], time.time(), "spike", 1.0, {}, 0.0)
     d = hype.read(dst.with_suffix(".json"))
     assert d["status"] == "approved" and d["title"] == "hi"
 
+
+
+def test_spam_cap_and_loudness_boost(tmp_path):
+    s = Session("twitch", "foo", tmp_path, {**CFG, "clip_length": 10, "bucket": 10})
+    now = time.time()
+    s.msgs.extend([(now, 2, "spam")] * 10 + [(now, 1, "x")])
+    assert s._hype(now, 1, 0.0) == {"score": 4.0, "msgs": 11, "chatters": 2}  # 3 + 1, not 21
+    assert s._hype(now, 1, 30.0)["score"] == 6.0 and s._hype(now, 1, 22.5)["score"] == 5.0  # 1.5x cap, 1.25x
+
+
+def clip_once(s, monkeypatch, spike, weights):
+    """Run one spike through _clip with chat of the given weights; returns the clip path."""
+    s.msgs.extend((spike, w, f"u{i}") for i, w in enumerate(weights))
+    s.seg_dir.mkdir(parents=True, exist_ok=True)
+    (s.seg_dir / f"{int(spike) - 3}.ts").write_bytes(b"x")
+    s.jobs.put((spike, "spike", 1.0))
+    s.jobs.put(None)
+    s._clip()
+    return s.clip_dir / f"twitch_foo_{datetime.fromtimestamp(spike):%Y%m%d-%H%M%S}.mp4"
+
+
+def test_min_score_drops_before_whisper(tmp_path, monkeypatch):
+    s = Session("twitch", "foo", tmp_path, {**CFG, "segment": 10, "bucket": 10, "min_score": 1.5})
+    cuts, caps, _ = stub_pipeline(monkeypatch)
+    monkeypatch.setattr(clipper, "cut", lambda src, st, ln, dst: dst.write_bytes(b"x"))
+    monkeypatch.setattr(clipper, "transcribe", boom)  # must not be reached
+    dst = clip_once(s, monkeypatch, time.time() - 100, [1])
+    assert not dst.exists() and s.clips == 0 and s.parts["whisper"].state != "error"
+    assert s.parts["ffmpeg"].detail == f"skipped {dst.name}: hype 1.00 < min" and not caps
+
+
+def test_top_per_hour_replaces_lowest(tmp_path, monkeypatch):
+    s = Session("twitch", "foo", tmp_path, {**CFG, "segment": 10, "bucket": 10, "top_per_hour": 2})
+    stub_pipeline(monkeypatch)
+    monkeypatch.setattr(clipper, "cut", lambda src, st, ln, dst: dst.write_bytes(b"x"))
+    base = time.time() - 5000
+    made = []
+    for i, n in enumerate([3, 5, 2, 4, 1]):  # n chatters = score n; the last spike is 2 h on, a fresh hour
+        made.append(clip_once(s, monkeypatch, base + (i * 100 if i < 4 else 4000), [1] * n))
+        for ext in (".srt", ".vtt", ".json", ".short.mp4"):
+            made[i].with_suffix(ext).write_bytes(b"x")
+    # 0 kept, 1 kept (full), 2 <= lowest -> dropped, 3 beats lowest (0) -> replaces it, 4 new hour -> kept
+    assert [m.exists() for m in made] == [False, True, False, True, True] and s.clips == 3
+    assert not made[0].with_suffix(".json").exists() and made[3].with_suffix(".json").exists()

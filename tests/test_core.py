@@ -252,9 +252,9 @@ def test_category_top(monkeypatch):
 
 
 def test_hype_weight_and_votes():
-    for t in ("KEKW", "that was LUL", "😂", "NO WAY DUDE", "clip it", "!CLIP"):
+    for t in ("KEKW", "that was LUL", "😂", "NO WAY DUDE", "clip it", "!CLIP", "lmao", "Wtf", "holy", "OMG", "bro", "no way", "🤣", "😭", "😱"):
         assert hype.weight(t) == 2, t
-    for t in ("hello", "OK", "kekw", "WOW", "clipping this", "I clip it"):
+    for t in ("hello", "OK", "kekw", "WOW", "clipping this", "I clip it", "broken", "lollipop"):
         assert hype.weight(t) == 1, t
     assert hype.is_clip(" !clip ") and not hype.is_clip("clip it now")
 

@@ -50,3 +50,11 @@ def test_cut_real(tmp_path):
     with pytest.raises(RuntimeError, match="empty clip"):  # seek past the end: ffmpeg exits 0 with nothing
         clipper.cut(src, 60, 2, tmp_path / "late.mp4")
     assert not (tmp_path / "late.mp4").exists() and not (tmp_path / "late.tmp.mp4").exists()
+
+
+def test_loudness(tmp_path):
+    tone, mute = tmp_path / "t.mp4", tmp_path / "m.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "sine=duration=1", str(tone)], check=True)
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64", str(mute)], check=True)
+    assert 0 < clipper.loudness(tone) < 10  # sine: peak a few dB over the mean
+    assert clipper.loudness(mute) == 0.0 and clipper.loudness(tmp_path / "missing") == 0.0

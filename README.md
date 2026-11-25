@@ -93,6 +93,8 @@ Every finished short gets posted to your Discord channel with the video attached
 --multiplier 2.0     a spike is a 10 s bucket at least this many times the usual chat speed
 --min-msgs 10        and at least this many messages
 --cooldown 30        seconds before the same channel can spike again
+--min-score 0        drop clips below this hype score before captioning (4 = only strong ones)
+--top-per-hour 0     keep only the N best clips per channel per hour, 0 = off
 --clip-votes 3       clip when this many chatters say !clip within 15 s, 0 = off
 --clip-length 30     --pre 20   (seconds kept before the spike; chat reacts late)
 --whisper-model base tiny is fastest, small and up caption better

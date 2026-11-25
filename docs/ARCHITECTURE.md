@@ -26,8 +26,8 @@ browser ──HTTP──> web.py (ThreadingHTTPServer, 127.0.0.1)
 | `chat.py` | Anonymous chat readers + `run_forever` reconnect loop |
 | `hype.py` | Hype score, `!clip` vote detection, title and hashtags, `<clip>.json` sidecar read/write (atomic; also used for `layouts.json`) |
 | `spikes.py` | 10 s buckets; spike = bucket ≥ max(min_msgs, multiplier × median of last 30 buckets), after 3-bucket warm-up, 30 s cooldown; `claim()` is the one locked check-and-set of `last_spike` that spikes and `!clip` votes both go through |
-| `session.py` | Per-channel pipeline and its 5 status parts (streamlink, chat, spikes, ffmpeg, whisper) |
-| `clipper.py` | `cut` (temp file → rename, rejects empty output), `transcribe` (faster-whisper, VAD, word timestamps), `write_captions` (.srt + .vtt) |
+| `session.py` | Per-channel pipeline and its 5 status parts (streamlink, chat, spikes, ffmpeg, whisper). After the cut it scores the clip (per-chatter cap of 3, loudness boost) and `--min-score` / `--top-per-hour` drop weak clips before whisper |
+| `clipper.py` | `loudness` (peak-to-mean dB via volumedetect), `cut` (temp file → rename, rejects empty output), `transcribe` (faster-whisper, VAD, word timestamps), `write_captions` (.srt + .vtt) |
 | `shorts.py` | ASS subtitles (3 words per line, current word yellow and enlarged) + ffmpeg vertical render: blurred background, or with a facecam crop a split layout (crop on top 672 px, gameplay center-crop below, captions at the seam). `clamp` validates crops |
 | `static/index.html` | Whole dashboard (inline CSS/JS): Live grid, Watch (official embeds), Clipping cards, Clips gallery |
 

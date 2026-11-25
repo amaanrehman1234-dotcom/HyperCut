@@ -15,7 +15,7 @@ from .web import App, lan_ip, make_server
 TOOLS = {"ffmpeg": "install it from https://ffmpeg.org/download.html or your package manager",
          "streamlink": "install it with: pip install streamlink"}
 CFG_KEYS = ("bucket", "clip_length", "pre", "multiplier", "min_msgs", "cooldown", "quality", "whisper_model",
-            "discord_webhook", "clip_votes", "translate")
+            "discord_webhook", "clip_votes", "translate", "min_score", "top_per_hour")
 SHUTDOWN_WAIT = 60  # seconds clip workers get to finish on exit
 
 
@@ -44,6 +44,10 @@ def parse(argv=None):
                    help="seconds per chat-count bucket (default: %(default)s)")
     g.add_argument("--clip-votes", metavar="N", type=int, default=3,
                    help="clip at once when N chatters say !clip within 15 s; 0 = off (default: %(default)s)")
+    g.add_argument("--min-score", metavar="X", type=float, default=0,
+                   help="drop clips with a hype score below X before captioning; 0 = keep all (default: %(default)s)")
+    g.add_argument("--top-per-hour", metavar="N", type=int, default=0,
+                   help="keep only the N best clips per channel per hour; 0 = off (default: %(default)s)")
     g.add_argument("--clip-length", metavar="SEC", type=int, default=30, help="seconds per clip (default: %(default)s)")
     g.add_argument("--pre", metavar="SEC", type=int, default=20,
                    help="seconds of the clip before the spike (default: %(default)s)")

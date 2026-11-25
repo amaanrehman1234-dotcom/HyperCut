@@ -1,5 +1,6 @@
 """Cut clips with ffmpeg and caption them with faster-whisper."""
 import os
+import re
 import subprocess
 import threading
 
@@ -22,6 +23,14 @@ def cut(src, start, length, dst):
         os.replace(tmp, dst)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def loudness(path):
+    """Peak-to-mean volume in dB (a shout or burst over the clip's usual level); 0.0 if no audio or unparseable."""
+    err = subprocess.run(["ffmpeg", "-hide_banner", "-i", str(path), "-af", "volumedetect", "-f", "null", "-"],
+                         capture_output=True, text=True, stdin=subprocess.DEVNULL).stderr
+    peak, mean = (re.search(rf"{k}_volume: (-?[\d.]+) dB", err) for k in ("max", "mean"))
+    return float(peak[1]) - float(mean[1]) if peak and mean else 0.0
 
 
 def _ts(t, sep):

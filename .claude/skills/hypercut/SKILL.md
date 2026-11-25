@@ -46,6 +46,7 @@ burned-in word-by-word captions), `.json` (hype score, title, hashtags, review `
 ## Checking it works
 
 - `curl -s 127.0.0.1:8787/api/sessions` → each session should show `"running": 5`.
+- Only viral clips: `--min-score 4 --top-per-hour 3` (weak clips are deleted after the cut, before whisper).
 - Part states: `ok` / `busy` = fine, `waiting` = channel offline (streamlink waits for it to go live),
   `error` = read its `detail`.
 - No clips? Look at `spikes.detail` ("N msgs/10s · baseline B"). If N never reaches 2× B, chat is steady:

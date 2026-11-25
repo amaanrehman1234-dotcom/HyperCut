@@ -5,7 +5,8 @@ import re
 import threading
 
 EMOTES = {"KEKW", "LUL", "LULW", "OMEGALUL", "POG", "POGGERS", "PogChamp", "Pog", "W", "monkaS", "EZ", "Clap"}
-EMOJI = "😂💀🔥"
+EMOJI = "😂🤣💀🔥😭😱"
+REACT = re.compile(r"\b(?:" + "|".join(("lmao", "lmfao", "lol", "wtf", "holy", "no way", "omg", "bro")) + r")\b", re.I)
 WORDS = ("insane", "crazy", "no way", "let's go", "oh my god", "omg", "wow")
 CLIP = re.compile(r"!?clip( it)?")
 TITLE_MAX = 60
@@ -18,9 +19,10 @@ def is_clip(text):
 
 
 def weight(text):
-    """1 per chat message, 2 if it is hype: a hype emote/emoji, ALL CAPS (>= 5 letters) or a clip request."""
+    """1 per chat message, 2 if it is hype: a hype emote/emoji, a reaction word (LMAO, WTF, NO WAY...), ALL CAPS (>= 5 letters) or a clip request."""
     letters = "".join(c for c in text if c.isalpha())
     hype = (EMOTES.intersection(text.split()) or any(e in text for e in EMOJI)
+            or REACT.search(text)
             or (len(letters) >= 5 and letters.isupper()) or is_clip(text))
     return 2 if hype else 1
 

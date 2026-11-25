@@ -56,7 +56,8 @@ class Session:
         self.on_clip = None  # hook for uploaders: called with each finished clip path
         self.clips = self.spikes = 0
         self.series = []  # last 30 bucket counts for the sparkline
-        self.msgs = deque()  # (time, weight) of recent chat messages, for the hype score
+        self.msgs = deque()  # (time, weight, who) of recent chat messages, for the hype score
+        self.kept = []  # (time, score, dst) of clips kept in the last hour, for --top-per-hour
         self.votes = {}  # chatter -> time of their latest clip request
         self.category = ""
         self.threads = []
@@ -89,7 +90,7 @@ class Session:
         """Chat thread: count the message, weigh it for the hype score, and queue a clip on enough !clip votes."""
         now = time.time()
         self.counter.add()
-        self.msgs.append((now, hype.weight(text)))
+        self.msgs.append((now, hype.weight(text), who))
         votes = self.cfg["clip_votes"]
         if votes and hype.is_clip(text):
             self.votes[who] = now
@@ -174,18 +175,45 @@ class Session:
                 self.spikes += 1
                 self.jobs.put((now, "spike", self.counter.baseline))
 
-    def _sidecar(self, dst, lines, spike, trigger, baseline):
-        """Write <clip>.json: hype score of the clip window, title, hashtags, review status."""
+    def _hype(self, spike, baseline, loud):
+        """Hype of the clip window: each chatter counts at most 3, loud audio boosts up to 1.5x."""
         t0, n = spike - self.cfg["pre"], self.cfg["clip_length"]
-        win = [w for t, w in list(self.msgs) if t0 <= t <= t0 + n]
+        win = [(w, who) for t, w, who in list(self.msgs) if t0 <= t <= t0 + n]
+        per = {}
+        for w, who in win:
+            per[who] = min(per.get(who, 0) + w, 3)  # 10 spammers can't fake a hype moment
+        boost = 1 + min(max(loud - 15, 0), 15) / 30
+        return {"score": round(hype.score(sum(per.values()), baseline, n / self.cfg["bucket"]) * boost, 2),
+                "msgs": len(win), "chatters": len(per)}
+
+    def _sidecar(self, dst, lines, spike, trigger, baseline, hit, loud):
+        """Write <clip>.json: hype score of the clip window, title, hashtags, review status."""
         path = dst.with_suffix(".json")
         with hype.lock:  # a review status set while whisper ran wins over "pending"
             hype.write(path, {
-                "score": hype.score(sum(win), baseline, n / self.cfg["bucket"]), "msgs": len(win),
+                **hit, "loudness": round(loud, 1),
                 "baseline": round(baseline, 1), "platform": self.platform, "login": self.login,
                 "category": self.category, "spike_at": round(spike, 1), "title": hype.title(lines, f"{self.login} · {self.category}" if self.category else self.login),
                 "hashtags": hype.hashtags(self.platform, self.login, self.category), "status": "pending",
                 "trigger": trigger, **hype.read(path)})
+
+    def _weak(self, dst, spike, score):
+        """Apply --min-score / --top-per-hour to a fresh cut: True (and its file deleted) if it is not worth keeping."""
+        top = self.cfg.get("top_per_hour", 0)
+        self.kept = [k for k in self.kept if k[0] > spike - 3600]
+        low = min(self.kept, key=lambda k: k[1]) if top and len(self.kept) >= top else None
+        if score < self.cfg.get("min_score", 0) or (low and score <= low[1]):
+            dst.unlink(missing_ok=True)
+            return True
+        if low:  # full hour and this one beats the weakest: drop the weakest
+            for ext in (".mp4", ".srt", ".vtt", ".json", ".short.mp4"):
+                low[2].with_suffix(ext).unlink(missing_ok=True)
+            self.kept.remove(low)
+            self.clips -= 1
+        if top:
+            self.kept.append((spike, score, dst))
+        self.clips += 1
+        return False
 
     def _clip(self):
         """Cut, caption, render each spike. On stop, still finishes queued spikes with the footage there is."""
@@ -204,12 +232,16 @@ class Session:
             try:
                 ff.set("busy", f"cutting {dst.name}")
                 clipper.cut(src, t0 - segs[0][0], cfg["clip_length"], dst)
-                self.clips += 1
+                loud = clipper.loudness(dst)
+                hit = self._hype(spike, baseline, loud)
+                if self._weak(dst, spike, hit["score"]):
+                    ff.set("ok", f"skipped {dst.name}: hype {hit['score']:.2f} < min")
+                    continue
                 ff.set("ok", f"{self.clips} clips")
                 wh.set("busy", f"captioning {dst.name}")
                 lines, words = clipper.transcribe(dst, cfg["whisper_model"], cfg.get("translate", False))
                 clipper.write_captions(lines, dst)
-                self._sidecar(dst, lines, spike, trigger, baseline)
+                self._sidecar(dst, lines, spike, trigger, baseline, hit, loud)
                 wh.set("busy", f"rendering vertical short {dst.name}")
                 shorts.render(dst, words, URLS[self.platform].format(self.login)[8:], dst.with_suffix(".short.mp4"),
                               crop=hype.read(self.layouts).get(self.key))  # read now: edits apply to the next short
