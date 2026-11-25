@@ -395,3 +395,12 @@ def test_top_per_hour_replaces_lowest(tmp_path, monkeypatch):
     # 0 kept, 1 kept (full), 2 <= lowest -> dropped, 3 beats lowest (0) -> replaces it, 4 new hour -> kept
     assert [m.exists() for m in made] == [False, True, False, True, True] and s.clips == 3
     assert not made[0].with_suffix(".json").exists() and made[3].with_suffix(".json").exists()
+
+
+def test_min_score_skips_cut_when_chat_cannot_reach_it(tmp_path, monkeypatch):
+    s = Session("twitch", "foo", tmp_path, {**CFG, "segment": 10, "bucket": 10, "min_score": 2})
+    stub_pipeline(monkeypatch)
+    monkeypatch.setattr(clipper, "cut", boom)  # chat 1.0 x max boost 1.5 < 2: must not even cut
+    dst = clip_once(s, monkeypatch, time.time() - 100, [1])
+    assert not dst.exists() and s.clips == 0 and s.parts["ffmpeg"].state == "ok"
+    assert s.parts["ffmpeg"].detail == "skipped spike: hype at most 1.50 < min"

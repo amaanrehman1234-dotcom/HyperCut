@@ -223,6 +223,10 @@ class Session:
             # chat reacts after the moment, so most of the window is before the spike
             t0 = spike - cfg["pre"]
             self.stop_ev.wait(max(0.0, t0 + cfg["clip_length"] + cfg["segment"] - time.time()))
+            best = self._hype(spike, baseline, 30)["score"]  # chat score with the max loudness boost
+            if best < cfg.get("min_score", 0):  # can't reach --min-score even if loud: don't even cut
+                ff.set("ok", f"skipped spike: hype at most {best:.2f} < min")
+                continue
             segs = [(t, p) for t, p in self.segments() if t0 - cfg["segment"] <= t <= t0 + cfg["clip_length"]]
             if not segs:
                 ff.set("ok", "spike skipped: no footage recorded")
