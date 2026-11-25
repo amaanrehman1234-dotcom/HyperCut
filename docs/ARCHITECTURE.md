@@ -9,7 +9,7 @@ browser ──HTTP──> web.py (ThreadingHTTPServer, 127.0.0.1)
                     ├─ App.follow    24/7: every 5 min, top-N of a category → start/stop sessions
                     └─ Session (one per channel, session.py), 4 threads:
                          _record  streamlink -O | ffmpeg -f segment → recordings/<ch>/<epoch>.ts
-                         chat     chat.twitch_chat (IRC over WebSocket, justinfan) / chat.kick_chat (poll)
+                         chat     chat.twitch_chat (IRC over WebSocket, justinfan) / chat.kick_chat (Pusher WebSocket)
                          _count   spikes.SpikeCounter.roll() every 10 s → queue spike time
                          _clip    concat segments → clipper.cut → clipper.transcribe → write_captions
                                   → shorts.render (1080×1920) → on_clip hook

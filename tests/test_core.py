@@ -1,4 +1,5 @@
 import io
+import json
 import threading
 
 import pytest
@@ -157,33 +158,46 @@ def test_twitch_chat_recv_timeout():
     assert not t.is_alive()
 
 
+def kick_server(frames_out, sent, done):
+    def handler(ws):
+        frames_out.append(json.loads(ws.recv()))
+        for f in sent:
+            ws.send(json.dumps(f))
+        frames_out.append(json.loads(ws.recv()))  # pong
+        done.wait(5)
+    return handler
+
+
+def run_kick(monkeypatch, sent):
+    monkeypatch.setattr(chat, "get_json", lambda url: {"chatroom": {"id": 42}})
+    frames, got, stop, done = [], [], threading.Event(), threading.Event()
+    with serve(kick_server(frames, sent, done), "127.0.0.1", 0) as srv:
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        url = f"ws://127.0.0.1:{srv.socket.getsockname()[1]}"
+        t = threading.Thread(target=chat.kick_chat, args=("s", lambda *m: got.append(m), stop, url))
+        t.start()
+        for _ in range(100):
+            if len(frames) >= 2:
+                break
+            stop.wait(0.05)
+        stop.wait(1.3)  # one recv timeout hits `continue`
+        stop.set()
+        t.join(5)
+        done.set()
+        srv.shutdown()
+    return frames, got
+
+
+def msg(i, content):
+    return {"event": "App\\Events\\ChatMessageEvent", "data": json.dumps({"content": content, "sender": {"id": i}})}
+
+
 def test_kick_chat(monkeypatch):
-    stop = threading.Event()
-    def m(i):
-        return {"id": i, "content": f"t{i}", "sender": {"id": 100 + i}}
-
-    polls = iter([{"data": {"messages": [m(1)]}}, {"data": {"messages": [m(1), m(2), m(3)]}},
-                  {"data": {"messages": [m(3)]}}])
-    got = []
-
-    def fake(url):
-        if url.endswith("/s"):
-            return {"id": 42}
-        assert "/42/messages" in url
-        return next(polls)
-
-    def on(who, text):
-        got.append((who, text))
-
-    def fake2(url):
-        r = fake(url)
-        if "messages" in url and len(got) == 2:
-            stop.set()
-        return r
-
-    monkeypatch.setattr(chat, "get_json", fake2)
-    chat.kick_chat("s", on, stop, interval=0)
-    assert got == [(102, "t2"), (103, "t3")]
+    frames, got = run_kick(monkeypatch, [{"event": "pusher_internal:subscription_succeeded"}, msg(1, "hi"),
+                                         msg(2, "[emote:123:KEKW] [emote:4:W]"), {"event": "pusher:ping"}])
+    assert frames == [{"event": "pusher:subscribe", "data": {"auth": "", "channel": "chatrooms.42.v2"}},
+                      {"event": "pusher:pong", "data": {}}]
+    assert got == [(1, "hi"), (2, "KEKW W")] and hype.weight(got[1][1]) == 2
 
 
 def test_run_forever():
@@ -269,18 +283,3 @@ def test_hype_title_hashtags_sidecar(tmp_path):
     assert hype.read(p) == {}
 
 
-def test_kick_emotes_become_names(monkeypatch):
-    stop, got = threading.Event(), []
-    msg = {"id": 1, "content": "[emote:123:KEKW] [emote:4:W]", "sender": {"id": 1}}
-    polls = iter([{"data": {"messages": []}}, {"data": {"messages": [msg]}}])
-
-    def fake(url):
-        if url.endswith("/s"):
-            return {"id": 42}
-        if got:
-            stop.set()
-        return next(polls, {"data": {"messages": []}})
-
-    monkeypatch.setattr(chat, "get_json", fake)
-    chat.kick_chat("s", lambda who, text: got.append(text), stop, interval=0)
-    assert got == ["KEKW W"] and hype.weight(got[0]) == 2

@@ -1,8 +1,7 @@
-"""Anonymous chat readers for Twitch (IRC over WebSocket) and Kick (polling)."""
+"""Anonymous chat readers for Twitch (IRC over WebSocket) and Kick (Pusher WebSocket)."""
+import json
 import random
 import re
-from collections import deque
-
 from websockets.sync.client import connect
 
 from .directory import KICK
@@ -10,6 +9,8 @@ from .net import get_json
 
 KICK_EMOTE = re.compile(r"\[emote:\d+:([^\]]+)\]")
 TWITCH_IRC = "wss://irc-ws.chat.twitch.tv:443"
+# Kick rotates this public key now and then (32cbd69e... died 2026); 4001 "not in this cluster" = rotated
+KICK_PUSHER = "wss://ws-us2.pusher.com/app/34bf7a0ff419a2a775b9?protocol=7&client=js&version=8.4.0&flash=false"
 
 
 def parse_privmsg(frame, send):
@@ -39,22 +40,21 @@ def twitch_chat(login, on_msg, stop, url=TWITCH_IRC):
                 on_msg(who, text)
 
 
-def kick_chat(slug, on_msg, stop, interval=1.0):
-    """Poll Kick's public recent-messages endpoint; calls on_msg(sender id, text) for unseen ids."""
-    # shortcut: endpoint returns the latest 25 msgs, so >25 msgs/interval undercounts;
-    # switch to websocket if Kick reopens it
-    cid = get_json(f"{KICK}/api/v2/channels/{slug}")["id"]
-    seen = deque(maxlen=500)
-    first = True
-    while not stop.is_set():
-        msgs = get_json(f"{KICK}/api/v2/channels/{cid}/messages")["data"]["messages"]
-        new = [m for m in msgs if m["id"] not in seen]
-        seen.extend(m["id"] for m in new)
-        if not first:
-            for m in new:
-                on_msg(m["sender"]["id"], KICK_EMOTE.sub(r"\1", m["content"]))
-        first = False
-        stop.wait(interval)
+def kick_chat(slug, on_msg, stop, url=KICK_PUSHER):
+    """Kick chat live over its public Pusher socket (no account); calls on_msg(sender id, text)."""
+    room = get_json(f"{KICK}/api/v2/channels/{slug}")["chatroom"]["id"]
+    with connect(url, open_timeout=15) as ws:
+        ws.send(json.dumps({"event": "pusher:subscribe", "data": {"auth": "", "channel": f"chatrooms.{room}.v2"}}))
+        while not stop.is_set():
+            try:
+                m = json.loads(ws.recv(timeout=1))
+            except TimeoutError:
+                continue
+            if m["event"] == "pusher:ping":
+                ws.send(json.dumps({"event": "pusher:pong", "data": {}}))
+            elif m["event"].endswith("ChatMessageEvent"):
+                d = json.loads(m["data"])
+                on_msg(d["sender"]["id"], KICK_EMOTE.sub(r"\1", d["content"]))
 
 
 def run_forever(fn, part, stop, backoff=5):
