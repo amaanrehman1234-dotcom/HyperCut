@@ -114,8 +114,9 @@ class App:
         with self.lock:
             key = f"{platform}:{login}"
             if key not in self.sessions:
-                if len(self.sessions) >= MAX_SESSIONS:
-                    raise ValueError(f"at most {MAX_SESSIONS} channels at once")
+                cap = self.cfg.get("max_sessions", MAX_SESSIONS)
+                if len(self.sessions) >= cap:
+                    raise ValueError(f"at most {cap} channels at once")
                 s = self.sessions[key] = self.session_cls(platform, login, self.out, self.cfg)
                 s.on_clip = notify.hook(self.cfg.get("discord_webhook"), platform, login)
                 s.start()

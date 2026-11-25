@@ -15,7 +15,7 @@ from .web import App, lan_ip, make_server
 TOOLS = {"ffmpeg": "install it from https://ffmpeg.org/download.html or your package manager",
          "streamlink": "install it with: pip install streamlink"}
 CFG_KEYS = ("bucket", "clip_length", "pre", "multiplier", "min_msgs", "cooldown", "quality", "whisper_model",
-            "discord_webhook", "clip_votes", "translate", "min_score", "top_per_hour")
+            "discord_webhook", "clip_votes", "translate", "max_sessions", "min_score", "top_per_hour")
 SHUTDOWN_WAIT = 60  # seconds clip workers get to finish on exit
 
 
@@ -59,6 +59,10 @@ def parse(argv=None):
     g = p.add_argument_group("24/7")
     g.add_argument("--follow", metavar="CATEGORY",
                    help='auto-clip the top channels of a category, e.g. "Grand Theft Auto VI"')
+    g.add_argument("--max-sessions", metavar="N", type=int, default=10,
+                   help="most channels clipped at once; each needs ~125 MB RAM (default: %(default)s)")
+    g.add_argument("--buffer", metavar="SEC", type=int, default=600,
+                   help="seconds of recording kept per channel; >= 120 (default: %(default)s)")
     g.add_argument("--top", metavar="N", type=int, default=3,
                    help="how many top channels --follow clips at once (default: %(default)s)")
 
@@ -69,7 +73,7 @@ def parse(argv=None):
     if a.discord_webhook and not a.discord_webhook.startswith(PREFIXES):
         p.error("--discord-webhook must start with https://discord.com/api/webhooks/")
     cfg = {k: getattr(a, k) for k in CFG_KEYS}
-    cfg.update(restart_delay=30, segment=10, retention=600)
+    cfg.update(restart_delay=30, segment=10, retention=max(a.buffer, 120))
     return a, cfg
 
 

@@ -99,6 +99,8 @@ Every finished short gets posted to your Discord channel with the video attached
 --clip-length 30     --pre 20   (seconds kept before the spike; chat reacts late)
 --whisper-model base tiny is fastest, small and up caption better
 --translate          English captions and titles, whatever language is spoken
+--max-sessions 10    most channels at once (~125 MB RAM each)
+--buffer 600         seconds of recording kept per channel (min 120); lower it to run many channels
 --quality best       streamlink quality
 --out DIR            where clips/ and recordings/ go
 --port 8787          --host 127.0.0.1

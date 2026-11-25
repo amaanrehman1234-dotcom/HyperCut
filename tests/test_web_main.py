@@ -174,6 +174,11 @@ def test_session_cap(tmp_path):
     app.start("kick", "a0")  # existing is fine
     with pytest.raises(ValueError):
         app.start("kick", "extra")
+    big = web.App(tmp_path, {"max_sessions": 12}, FakeDir(), FakeSession)
+    for i in range(12):
+        big.start("kick", f"a{i}")
+    with pytest.raises(ValueError, match="at most 12"):
+        big.start("kick", "extra")
 
 
 def test_favorites_robust(tmp_path):
@@ -230,6 +235,8 @@ def test_cli(tmp_path, monkeypatch):
     a, cfg = cli.parse(["--port", "1", "--bucket", "5"])
     assert a.port == 1 and a.multiplier == 2.0 and cfg["bucket"] == 5 and cfg["restart_delay"] == 30
     assert cfg["clip_votes"] == 3 and cli.parse(["--clip-votes", "0"])[1]["clip_votes"] == 0
+    assert cfg["max_sessions"] == 10 and cfg["retention"] == 600
+    assert cli.parse(["--buffer", "30"])[1]["retention"] == 120 and cli.parse(["--buffer", "300"])[1]["retention"] == 300
     opened = []
     monkeypatch.setattr(cli.webbrowser, "open", opened.append)
     app = cli.main(["--port", "0", "--out", str(tmp_path), "--open"], serve=False)
